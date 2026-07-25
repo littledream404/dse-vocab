@@ -57,7 +57,7 @@
       const [studyIndex, setStudyIndex] = useState(0);
       const [isFlipped, setIsFlipped] = useState(false);
       
-      const [definition, setDefinition] = useState(null); // 改為儲存 { dict: ..., translation: ... }
+      const [definition, setDefinition] = useState(null); 
       const [isLoadingDef, setIsLoadingDef] = useState(false);
       
       const [isParsing, setIsParsing] = useState(false);
@@ -80,12 +80,11 @@
       const [isSyncing, setIsSyncing] = useState(false);
       const [authLoading, setAuthLoading] = useState(true);
 
-      // 新增：顯示語言設定 (預設為雙語)
       const [defLang, setDefLang] = useState(localStorage.getItem('dse_vocab_lang') || 'both');
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v10';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v11';
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -146,7 +145,6 @@
           setAuthLoading(false);
         }
         
-        // 確保語音列表預先載入
         if ('speechSynthesis' in window) {
             window.speechSynthesis.getVoices();
         }
@@ -290,14 +288,12 @@
         }
       };
 
-      // 支援雙口音發音 (US 美式 / UK 英式)
       const speakWord = (wordStr, accent = 'US', e) => {
         if (e) e.stopPropagation();
         if ('speechSynthesis' in window) {
           window.speechSynthesis.cancel();
           const utter = new SpeechSynthesisUtterance(wordStr);
           
-          // 抓取系統語音包
           const voices = window.speechSynthesis.getVoices();
           let targetVoice = null;
           
@@ -310,13 +306,13 @@
           }
           
           if (targetVoice) utter.voice = targetVoice;
-          utter.rate = 0.85; // 稍微放慢一點更清晰
+          utter.rate = 0.85; 
           
           window.speechSynthesis.speak(utter);
         }
       };
 
-      // 雙字典查詢引擎 (英英 + 機器翻譯中譯)
+      // 改用 Google Translate API 確保返回繁體中文 (zh-TW)
       const fetchDefinitionApi = async (wordStr) => {
         let dictData = null;
         let transData = null;
@@ -328,15 +324,12 @@
             dictData = (await dictRes.json())[0];
           }
           
-          // 2. 抓取中文翻譯 (MyMemory API, 免費且免金鑰)
-          const transRes = await fetch(`https://api.mymemory.translated.net/get?q=${wordStr}&langpair=en|zh-TW`);
+          // 2. 抓取中文翻譯 (Google Translate API - 確保繁體字)
+          const transRes = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(wordStr)}`);
           if (transRes.ok) {
             const transJson = await transRes.json();
-            if (transJson.responseData && transJson.responseData.translatedText) {
-               let text = transJson.responseData.translatedText;
-               if (!text.includes("MYMEMORY")) { // 避免配額限制警告文字
-                   transData = text;
-               }
+            if (transJson && transJson[0] && transJson[0][0] && transJson[0][0][0]) {
+               transData = transJson[0][0][0];
             }
           }
         } catch (e) {
@@ -560,10 +553,9 @@
                   <span className="text-[10px] uppercase tracking-widest text-indigo-400 font-bold mb-3 block bg-indigo-50 px-2 py-0.5 rounded-full mt-2">點擊卡片看解釋</span>
                   <h1 className="text-4xl font-black text-gray-900 tracking-tight mb-4">{currentWordObj.word}</h1>
                   
-                  {/* 雙語音按鈕 - 卡片正面 */}
                   <div className="flex gap-3 justify-center mt-2">
-                    <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 shadow-sm flex items-center gap-1 cursor-pointer">🇬🇧 英音</button>
-                    <button onClick={(e) => speakWord(currentWordObj.word, 'US', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 shadow-sm flex items-center gap-1 cursor-pointer">🇺🇸 美音</button>
+                    <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 shadow-sm flex items-center gap-1 cursor-pointer">🇬🇧 英式</button>
+                    <button onClick={(e) => speakWord(currentWordObj.word, 'US', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 shadow-sm flex items-center gap-1 cursor-pointer">🇺🇸 美式</button>
                   </div>
 
                   {currentWordObj.note && (
@@ -585,16 +577,16 @@
                       <div className="text-sm space-y-3 pb-2">
                         {/* 中文翻譯顯示 (若設定為 both 或 zh) */}
                         {(defLang === 'both' || defLang === 'zh') && definition?.translation && (
-                           <div className="bg-indigo-50/50 p-2.5 rounded-xl border border-indigo-100">
-                             <div className="text-[10px] text-indigo-400 font-bold mb-1 uppercase tracking-wider">中文翻譯</div>
-                             <div className="font-bold text-indigo-900">{definition.translation}</div>
+                           <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100">
+                             <div className="text-[10px] text-indigo-400 font-bold mb-1 uppercase tracking-wider">繁體中文翻譯</div>
+                             <div className="font-bold text-indigo-900 text-base">{definition.translation}</div>
                            </div>
                         )}
                         
                         {/* 英文解釋顯示 (若設定為 both 或 en) */}
                         {(defLang === 'both' || defLang === 'en') && definition?.dict?.meanings ? (
                            <div className="space-y-3">
-                             <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">English Definition</div>
+                             <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-2">English Definition</div>
                              {definition.dict.phonetic && <span className="font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded text-xs font-bold inline-block">{definition.dict.phonetic}</span>}
                              
                              {definition.dict.meanings.map((m, i) => (
@@ -660,12 +652,11 @@
                 </div>
               </div>
               
-              {/* 新增功能：切換語言設定 */}
               <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
                 <label className="text-xs font-bold text-gray-700 block mb-2">🌐 解釋顯示語言：</label>
                 <select value={defLang} onChange={changeLangPreference} className="w-full p-2.5 text-sm border border-gray-200 rounded-lg outline-none bg-gray-50 text-gray-800 font-semibold cursor-pointer">
                   <option value="both">中英雙語對照 (建議)</option>
-                  <option value="zh">僅顯示中文翻譯</option>
+                  <option value="zh">僅顯示繁體中文</option>
                   <option value="en">僅顯示英文解釋</option>
                 </select>
               </div>
@@ -797,7 +788,6 @@
             {view === 'list' && renderList()}
           </main>
 
-          {/* 單字詳細資訊 Modal */}
           {activeDetailWord && (
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl flex flex-col max-h-[85vh]">
@@ -805,8 +795,8 @@
                   <div>
                      <h3 className="text-2xl font-black text-gray-900">{activeDetailWord.word}</h3>
                      <div className="flex gap-1.5 mt-2">
-                        <button onClick={(e) => speakWord(activeDetailWord.word, 'UK', e)} className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 cursor-pointer">🇬🇧 英音</button>
-                        <button onClick={(e) => speakWord(activeDetailWord.word, 'US', e)} className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 cursor-pointer">🇺🇸 美音</button>
+                        <button onClick={(e) => speakWord(activeDetailWord.word, 'UK', e)} className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 cursor-pointer">🇬🇧 英式</button>
+                        <button onClick={(e) => speakWord(activeDetailWord.word, 'US', e)} className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 cursor-pointer">🇺🇸 美式</button>
                      </div>
                   </div>
                   <button onClick={() => setActiveDetailWord(null)} className="text-gray-400 p-1 cursor-pointer text-lg">✖</button>
@@ -815,15 +805,15 @@
                 <div className="flex-grow overflow-y-auto text-xs mb-3 max-h-[220px]">
                   {isLoadingDetailDef ? <div className="text-gray-400 text-center py-4">載入解釋中...</div> : detailDef?.notFound ? <div className="text-gray-400 py-2">無此單字解釋。</div> : (
                      <div className="space-y-3">
-                        {/* 模態框中的中文翻譯 */}
+                        {/* 模態框中的繁體中文翻譯 */}
                         {(defLang === 'both' || defLang === 'zh') && detailDef?.translation && (
-                           <div className="bg-indigo-50/50 p-2 rounded-lg border border-indigo-100">
-                             <div className="text-[10px] text-indigo-400 font-bold mb-1">中文翻譯</div>
+                           <div className="bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100">
+                             <div className="text-[10px] text-indigo-400 font-bold mb-1 uppercase tracking-wider">繁體中文翻譯</div>
                              <div className="font-bold text-indigo-900 text-sm">{detailDef.translation}</div>
                            </div>
                         )}
                         
-                        {/* 模態框中的英文翻譯 */}
+                        {/* 模態框中的英文解釋 */}
                         {(defLang === 'both' || defLang === 'en') && detailDef?.dict?.meanings && (
                            <div>
                              <div className="text-[10px] text-gray-400 font-bold mb-1 uppercase tracking-wider">English Definition</div>
