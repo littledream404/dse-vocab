@@ -9,10 +9,8 @@
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <!-- Babel compiler for JSX -->
+  <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
   <style>
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -21,7 +19,36 @@
 <body class="bg-slate-50">
   <div id="root"></div>
 
+  <!-- Firebase SDK Compat -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
   <script type="text/babel">
+    // 已整合專屬 Firebase 金鑰
+    const firebaseConfig = {
+      apiKey: "AIzaSyC_RkNFqihJ8rkuFsSOf1l9XX7c71sQxng",
+      authDomain: "dse-vocab-5dcac.firebaseapp.com",
+      projectId: "dse-vocab-5dcac",
+      storageBucket: "dse-vocab-5dcac.firebasestorage.app",
+      messagingSenderId: "79608998812",
+      appId: "1:79608998812:web:0da90310b1e9b25a2ef659",
+      measurementId: "G-3K0PSN3EGD"
+    };
+
+    let auth = null;
+    let db = null;
+
+    try {
+      if (firebaseConfig.apiKey) {
+        firebase.initializeApp(firebaseConfig);
+        auth = firebase.auth();
+        db = firebase.firestore();
+      }
+    } catch(e) {
+      console.log("Firebase 初始化失敗，維持離線模式", e);
+    }
+
     const { useState, useEffect, useRef, useMemo } = React;
 
     function App() {
@@ -46,32 +73,85 @@
       const [detailDef, setDetailDef] = useState(null);
       const [isLoadingDetailDef, setIsLoadingDetailDef] = useState(false);
       const [detailStatus, setDetailStatus] = useState('new');
+      
+      const [user, setUser] = useState(null);
+      const [isSyncing, setIsSyncing] = useState(false);
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v1';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v5';
 
+      // 1. 監聽身份與從雲端抓取進度
       useEffect(() => {
-        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (parsed.length > 0) {
-              setWords(parsed);
-              setView('study');
+        if (auth) {
+          const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
+            setUser(currentUser);
+            if (currentUser && db) {
+              setIsSyncing(true);
+              try {
+                const docRef = db.collection('users').doc(currentUser.uid);
+                const docSnap = await docRef.get();
+                if (docSnap.exists && docSnap.data().words) {
+                  setWords(docSnap.data().words);
+                  setView('study');
+                }
+              } catch(e) {
+                console.error("雲端資料讀取失敗", e);
+              } finally {
+                setIsSyncing(false);
+              }
             }
-          } catch (e) {
-            console.error("載入失敗", e);
+          });
+          return () => unsubscribe();
+        } else {
+          const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed.length > 0) { setWords(parsed); setView('study'); }
+            } catch (e) { console.error(e); }
           }
         }
       }, []);
 
+      // 2. 數據同步 (LocalStorage + Cloud Firestore)
       useEffect(() => {
         if (words.length > 0) {
           const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
+          
+          if (user && db) {
+            setIsSyncing(true);
+            db.collection('users').doc(user.uid).set({
+              words: safeWords,
+              updatedAt: new Date().toISOString()
+            }).finally(() => setIsSyncing(false));
+          }
         }
-      }, [words]);
+      }, [words, user]);
+
+      const handleGoogleLogin = async () => {
+        if (!auth) {
+          alert("Firebase 未正常載入，請稍後再試。");
+          return;
+        }
+        try {
+          const provider = new firebase.auth.GoogleAuthProvider();
+          await auth.signInWithPopup(provider);
+          alert("Google 帳號綁定成功！進度已自動同步至雲端。");
+        } catch (e) {
+          console.error(e);
+          alert("登入失敗，請確認已在 Firebase Console 開啟 Google 身份驗證！");
+        }
+      };
+
+      const handleLogout = async () => {
+        if (auth) {
+          await auth.signOut();
+          setUser(null);
+          alert("已成功登出。");
+        }
+      };
 
       const studyList = useMemo(() => {
         if (studyMode === 'all') return words;
@@ -166,11 +246,8 @@
         setDefinition(null);
         try {
           const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${wordStr}`);
-          if (res.ok) {
-            setDefinition((await res.json())[0]);
-          } else {
-            setDefinition({ notFound: true });
-          }
+          if (res.ok) setDefinition((await res.json())[0]);
+          else setDefinition({ notFound: true });
         } catch (e) {
           setDefinition({ error: true });
         } finally {
@@ -187,11 +264,8 @@
 
         try {
           const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${item.word}`);
-          if (res.ok) {
-            setDetailDef((await res.json())[0]);
-          } else {
-            setDetailDef({ notFound: true });
-          }
+          if (res.ok) setDetailDef((await res.json())[0]);
+          else setDetailDef({ notFound: true });
         } catch (e) {
           setDetailDef({ error: true });
         } finally {
@@ -207,9 +281,7 @@
       };
 
       const handleFlip = () => {
-        if (!isFlipped && studyList.length > 0) {
-          fetchDefinition(studyList[studyIndex].word);
-        }
+        if (!isFlipped && studyList.length > 0) fetchDefinition(studyList[studyIndex].word);
         setIsFlipped(!isFlipped);
       };
 
@@ -253,6 +325,9 @@
       const executeClearAll = () => {
         setWords([]);
         localStorage.clear();
+        if (user && db) {
+          db.collection('users').doc(user.uid).delete();
+        }
         setShowClearConfirmModal(false);
         setView('import');
         alert("已徹底清空所有記錄！");
@@ -289,7 +364,7 @@
             <p className="text-gray-500 text-xs px-4">支援大型 PDF，系統將自動萃取並保護裝置記憶體</p>
           </div>
           <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center">
-            <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 mb-4">📄</div>
+            <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 mb-4 text-2xl">📄</div>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt" className="hidden" />
             <button 
               onClick={() => fileInputRef.current.click()} 
@@ -348,7 +423,7 @@
                   >🗑️</button>
                   <span className="text-[10px] uppercase tracking-widest text-indigo-400 font-bold mb-3 block bg-indigo-50 px-2 py-0.5 rounded-full mt-2">點擊卡片看解釋</span>
                   <h1 className="text-4xl font-black text-gray-900 tracking-tight mb-4">{currentWordObj.word}</h1>
-                  <button onClick={(e) => speakWord(currentWordObj.word, e)} className="w-14 h-14 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-200 shadow-sm mt-2 cursor-pointer">🔊</button>
+                  <button onClick={(e) => speakWord(currentWordObj.word, e)} className="w-14 h-14 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-200 shadow-sm mt-2 cursor-pointer text-xl">🔊</button>
                   {currentWordObj.note && (
                     <div className="mt-5 text-xs text-amber-600 font-semibold flex items-center bg-amber-50 px-3 py-1 rounded-full">📝 包含個人備註</div>
                   )}
@@ -402,6 +477,7 @@
           <div className="flex flex-col items-center py-6 w-full">
             <div className="text-5xl mb-3">🏆</div>
             <h2 className="text-xl font-bold text-gray-800 mb-5">學習進度總覽</h2>
+            
             <div className="grid grid-cols-3 gap-3 w-full mb-6">
               <div className="bg-white p-3 rounded-xl shadow-sm text-center border-t-2 border-green-500"><p className="text-[10px] text-gray-400">已掌握</p><p className="text-xl font-bold text-green-600 mt-1">{known}</p></div>
               <div className="bg-white p-3 rounded-xl shadow-sm text-center border-t-2 border-orange-500"><p className="text-[10px] text-gray-400">需複習</p><p className="text-xl font-bold text-orange-600 mt-1">{review}</p></div>
@@ -409,6 +485,21 @@
             </div>
 
             <div className="w-full flex flex-col gap-3">
+              <div className="bg-indigo-50/70 p-4 rounded-xl shadow-sm border border-indigo-100 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-gray-800">☁️ 雲端帳號同步</p>
+                  <p className="text-[10px] text-gray-500">
+                    {user ? `已綁定: ${user.email}` : '尚未綁定 Google 帳號'}
+                    {isSyncing && ' (同步中...)'}
+                  </p>
+                </div>
+                {user ? (
+                  <button onClick={handleLogout} className="px-3 py-1.5 bg-white text-gray-700 border border-gray-300 rounded-lg text-xs font-bold shadow-xs cursor-pointer">登出</button>
+                ) : (
+                  <button onClick={handleGoogleLogin} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer">綁定 Google</button>
+                )}
+              </div>
+
               <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
                 <label className="text-xs font-bold text-gray-700 block mb-2">🎯 自訂溫習範圍：</label>
                 <select value={studyMode} onChange={(e) => { setStudyMode(e.target.value); setStudyIndex(0); }} className="w-full p-2.5 text-sm border border-indigo-200 rounded-lg outline-none bg-indigo-50/50 text-indigo-900 font-semibold cursor-pointer mb-3">
@@ -419,6 +510,7 @@
                 </select>
                 <button onClick={() => { setStudyIndex(0); setView('study'); }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg text-sm shadow hover:bg-indigo-700 cursor-pointer">開始溫習</button>
               </div>
+
               <button onClick={() => setView('list')} className="w-full py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-xl text-xs hover:bg-gray-50 cursor-pointer">進入字庫管理 (點擊單字可看解釋與加備註)</button>
               <button onClick={() => setShowClearConfirmModal(true)} className="w-full mt-2 py-2 text-red-500 font-bold text-xs underline cursor-pointer">清空所有記錄並重新上傳</button>
             </div>
