@@ -25,7 +25,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
   <script type="text/babel">
-    // 已整合專屬 Firebase 金鑰
     const firebaseConfig = {
       apiKey: "AIzaSyC_RkNFqihJ8rkuFsSOf1l9XX7c71sQxng",
       authDomain: "dse-vocab-5dcac.firebaseapp.com",
@@ -76,12 +75,13 @@
       
       const [user, setUser] = useState(null);
       const [isSyncing, setIsSyncing] = useState(false);
+      const [authLoading, setAuthLoading] = useState(true);
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v5';
 
-      // 1. 監聽身份與從雲端抓取進度
+      // 初始化：監聽身分並決定初始畫面
       useEffect(() => {
         if (auth) {
           const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
@@ -91,44 +91,57 @@
               try {
                 const docRef = db.collection('users').doc(currentUser.uid);
                 const docSnap = await docRef.get();
-                if (docSnap.exists && docSnap.data().words) {
+                // 如果雲端有資料，直接載入並跳轉到統計畫面
+                if (docSnap.exists && docSnap.data().words && docSnap.data().words.length > 0) {
                   setWords(docSnap.data().words);
-                  setView('study');
+                  setView('stats'); 
                 }
               } catch(e) {
                 console.error("雲端資料讀取失敗", e);
               } finally {
                 setIsSyncing(false);
+                setAuthLoading(false);
               }
+            } else {
+              // 沒登入，嘗試讀取本地儲存
+              loadLocalData();
+              setAuthLoading(false);
             }
           });
           return () => unsubscribe();
         } else {
-          const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              if (parsed.length > 0) { setWords(parsed); setView('study'); }
-            } catch (e) { console.error(e); }
-          }
+          loadLocalData();
+          setAuthLoading(false);
         }
       }, []);
 
-      // 2. 數據同步 (LocalStorage + Cloud Firestore)
+      const loadLocalData = () => {
+        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (parsed.length > 0) { 
+              setWords(parsed); 
+              setView('stats'); 
+            }
+          } catch (e) { console.error(e); }
+        }
+      };
+
+      // 數據同步機制 (只有在非初次載入，且有變更時才同步)
       useEffect(() => {
-        if (words.length > 0) {
+        if (words.length > 0 && !authLoading) {
           const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
           
-          if (user && db) {
-            setIsSyncing(true);
+          if (user && db && !isSyncing) {
             db.collection('users').doc(user.uid).set({
               words: safeWords,
               updatedAt: new Date().toISOString()
-            }).finally(() => setIsSyncing(false));
+            }).catch(e => console.error("同步失敗", e));
           }
         }
-      }, [words, user]);
+      }, [words, user, db, authLoading]);
 
       const handleGoogleLogin = async () => {
         if (!auth) {
@@ -138,10 +151,10 @@
         try {
           const provider = new firebase.auth.GoogleAuthProvider();
           await auth.signInWithPopup(provider);
-          alert("Google 帳號綁定成功！進度已自動同步至雲端。");
+          // 登入後 onAuthStateChanged 會自動觸發並抓取雲端資料
         } catch (e) {
           console.error(e);
-          alert("登入失敗，請確認已在 Firebase Console 開啟 Google 身份驗證！");
+          alert("登入失敗，請確認設定或網路狀態。");
         }
       };
 
@@ -149,7 +162,10 @@
         if (auth) {
           await auth.signOut();
           setUser(null);
-          alert("已成功登出。");
+          // 登出後清空當前畫面資料，回到上傳頁面
+          setWords([]);
+          setView('import');
+          alert("已成功登出，本機記憶體已重置。");
         }
       };
 
@@ -217,10 +233,21 @@
           });
 
           const newWords = Array.from(uniqueMap.keys()).map(w => ({ word: w, status: 'new', note: '' }));
+          
+          // 如果是登入狀態，詢問是否要覆蓋雲端
+          if (user && words.length > 0) {
+             const confirmOverride = window.confirm("偵測到雲端已有單字記錄。上傳新檔案會覆蓋目前的進度，確定要繼續嗎？");
+             if(!confirmOverride) {
+                 setIsParsing(false);
+                 if (fileInputRef.current) fileInputRef.current.value = '';
+                 return;
+             }
+          }
+
           setWords(newWords);
           setStudyMode('all');
           setStudyIndex(0);
-          setView('study');
+          setView('stats'); // 上傳完跳到統計總覽
         } catch (err) {
           alert("解析失敗，請確認檔案格式正確。");
         } finally {
@@ -357,22 +384,55 @@
         }
       };
 
+      // 修改：強化版的初始匯入頁面
       const renderImport = () => (
         <div className="flex flex-col items-center justify-center min-h-[75vh] py-8">
-          <div className="text-center mb-6">
-            <h2 className="text-2xl font-extrabold text-gray-800 mb-2">上傳你的單字文件</h2>
-            <p className="text-gray-500 text-xs px-4">支援大型 PDF，系統將自動萃取並保護裝置記憶體</p>
+          
+          {/* 登入區塊移到最上方 */}
+          <div className="w-full bg-indigo-50/70 p-5 rounded-3xl shadow-sm border border-indigo-100 flex flex-col items-center mb-8">
+            <div className="text-3xl mb-2">☁️</div>
+            <h3 className="text-lg font-bold text-gray-800 mb-1">雲端進度同步</h3>
+            <p className="text-xs text-gray-500 text-center mb-4">登入 Google 帳號，自動還原之前的單字與進度，跨裝置無縫學習。</p>
+            
+            {authLoading ? (
+               <div className="text-indigo-500 text-sm font-bold">正在檢查登入狀態...</div>
+            ) : user ? (
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-bold text-green-600 mb-2">✅ 已登入：{user.email}</span>
+                {isSyncing ? (
+                   <span className="text-xs text-indigo-600">同步雲端資料中...</span>
+                ) : (
+                  <button onClick={handleLogout} className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-xl text-sm font-bold shadow-xs">登出帳號</button>
+                )}
+              </div>
+            ) : (
+              <button onClick={handleGoogleLogin} className="w-full py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow hover:bg-indigo-700 transition">
+                使用 Google 帳號登入
+              </button>
+            )}
           </div>
-          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center">
-            <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 mb-4 text-2xl">📄</div>
+
+          <div className="text-center mb-4">
+            <div className="flex items-center justify-center gap-2 mb-2 text-gray-400">
+              <span className="h-px bg-gray-200 w-12"></span>
+              <span className="text-xs font-bold uppercase tracking-wider">或者建立新字庫</span>
+              <span className="h-px bg-gray-200 w-12"></span>
+            </div>
+            <h2 className="text-xl font-extrabold text-gray-800 mb-1">上傳單字文件</h2>
+          </div>
+
+          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center relative overflow-hidden">
+             {isSyncing && <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center"><span className="text-indigo-600 font-bold">雲端還原中...</span></div>}
+            <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 mb-4 text-2xl border-2 border-dashed border-gray-200">📄</div>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt" className="hidden" />
             <button 
               onClick={() => fileInputRef.current.click()} 
-              disabled={isParsing}
-              className="w-full py-3 px-6 bg-indigo-600 text-white font-bold rounded-xl shadow hover:bg-indigo-700 transition flex justify-center text-sm disabled:opacity-70 cursor-pointer"
+              disabled={isParsing || isSyncing}
+              className="w-full py-3 px-6 bg-gray-800 text-white font-bold rounded-xl shadow hover:bg-gray-900 transition flex justify-center text-sm disabled:opacity-50 cursor-pointer"
             >
-              {isParsing ? parseStatus : "選擇 PDF 檔案"}
+              {isParsing ? parseStatus : "選擇 PDF 檔案上傳"}
             </button>
+            <p className="text-gray-400 text-[10px] mt-3">支援萃取大型 PDF 內的英文單字</p>
           </div>
         </div>
       );
@@ -536,7 +596,7 @@
           <div className="flex flex-col w-full h-[85vh] py-4">
             <div className="flex justify-between items-center mb-3">
               <h2 className="text-lg font-bold text-gray-800">字庫管理 <span className="text-sm font-normal text-gray-500">({sortedList.length})</span></h2>
-              <button onClick={() => setView('study')} className="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-lg text-xs shadow cursor-pointer">返回溫習</button>
+              <button onClick={() => setView('stats')} className="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-lg text-xs shadow cursor-pointer">返回統計</button>
             </div>
 
             <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 mb-3 flex flex-col gap-2">
@@ -605,7 +665,7 @@
         <div className="min-h-screen bg-slate-50 font-sans pb-16">
           <header className="bg-white shadow-xs sticky top-0 z-20">
             <div className="max-w-md mx-auto px-4 h-14 flex items-center justify-between">
-              <div className="flex items-center text-indigo-600 cursor-pointer" onClick={() => words.length > 0 && setView('study')}>
+              <div className="flex items-center text-indigo-600 cursor-pointer" onClick={() => words.length > 0 && setView('stats')}>
                 <span className="text-lg mr-1.5">✨</span>
                 <h1 className="font-bold text-sm tracking-tight">DSE 5000+ 單字神器</h1>
               </div>
@@ -673,4 +733,5 @@
   </script>
 </body>
 </html>
+
 
