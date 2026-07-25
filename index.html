@@ -79,53 +79,9 @@
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v6';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v8';
 
-      // 1. 初始化與登入狀態監聽
-      useEffect(() => {
-        if (auth) {
-          const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
-            setUser(currentUser);
-            if (currentUser && db) {
-              setIsSyncing(true);
-              try {
-                const docRef = db.collection('users').doc(currentUser.uid);
-                const docSnap = await docRef.get();
-                if (docSnap.exists && docSnap.data().words && docSnap.data().words.length > 0) {
-                  // 雲端有資料，直接採用雲端數據並跳轉到統計畫面
-                  setWords(docSnap.data().words);
-                  setView('stats');
-                } else {
-                  // 雲端沒資料，檢查本機有無資料，有則自動上傳到雲端初始化
-                  const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-                  if (saved) {
-                    const parsed = JSON.parse(saved);
-                    if (parsed.length > 0) {
-                      setWords(parsed);
-                      await docRef.set({ words: parsed, updatedAt: new Date().toISOString() });
-                      setView('stats');
-                    }
-                  }
-                }
-              } catch(e) {
-                console.error("雲端同步錯誤", e);
-              } finally {
-                setIsSyncing(false);
-                setAuthLoading(false);
-              }
-            } else {
-              // 未登入，載入本機資料
-              loadLocalData();
-              setAuthLoading(false);
-            }
-          });
-          return () => unsubscribe();
-        } else {
-          loadLocalData();
-          setAuthLoading(false);
-        }
-      }, []);
-
+      // 載入本機資料
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
         if (saved) {
@@ -139,7 +95,57 @@
         }
       };
 
-      // 2. 自動同步進度至雲端與本機
+      // 核心：從雲端抓取資料並自動跳轉
+      const fetchCloudDataForUser = async (currentUser) => {
+        if (!db || !currentUser) return;
+        setIsSyncing(true);
+        try {
+          const docRef = db.collection('users').doc(currentUser.uid);
+          const docSnap = await docRef.get();
+          if (docSnap.exists && docSnap.data().words && docSnap.data().words.length > 0) {
+            const cloudWords = docSnap.data().words;
+            setWords(cloudWords);
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
+            setView('stats'); // 成功跳轉！
+          } else {
+            // 雲端沒有，檢查本機有沒有，有則自動上傳初始化
+            const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (parsed.length > 0) {
+                setWords(parsed);
+                await docRef.set({ words: parsed, updatedAt: new Date().toISOString() });
+                setView('stats');
+              }
+            }
+          }
+        } catch(e) {
+          console.error("雲端讀取錯誤", e);
+        } finally {
+          setIsSyncing(false);
+        }
+      };
+
+      // 啟動監聽
+      useEffect(() => {
+        if (auth) {
+          const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
+            setUser(currentUser);
+            if (currentUser) {
+              await fetchCloudDataForUser(currentUser);
+            } else {
+              loadLocalData();
+            }
+            setAuthLoading(false);
+          });
+          return () => unsubscribe();
+        } else {
+          loadLocalData();
+          setAuthLoading(false);
+        }
+      }, []);
+
+      // 自動同步
       useEffect(() => {
         if (words.length > 0 && !authLoading) {
           const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
@@ -149,19 +155,32 @@
             db.collection('users').doc(user.uid).set({
               words: safeWords,
               updatedAt: new Date().toISOString()
-            }).catch(e => console.error("上傳雲端失敗", e));
+            }).catch(e => console.error("自動同步失敗", e));
           }
         }
       }, [words, user, db, authLoading]);
 
+      // 針對 iPhone Chrome 最佳化的閃電登入
       const handleGoogleLogin = async () => {
         if (!auth) return;
+        setIsSyncing(true);
         try {
           const provider = new firebase.auth.GoogleAuthProvider();
-          await auth.signInWithPopup(provider);
+          // 在 iPhone 上優先嘗試 Popup，如果被阻擋則會自動觸發 catch
+          const result = await auth.signInWithPopup(provider);
+          if (result.user) {
+            setUser(result.user);
+            await fetchCloudDataForUser(result.user); // 立即直奔雲端並切換畫面！
+          }
         } catch (e) {
-          console.error(e);
-          alert("登入失敗，請確認網路或 Firebase 設定。");
+          console.error("Popup 登入失敗，嘗試重新導向模式", e);
+          try {
+            // 備用方案：使用跳轉式登入 (Redirect)，最適合 iOS 瀏覽器
+            await auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
+          } catch(err) {
+            alert("登入被阻擋或失敗，請檢查瀏覽器是否允許彈跳視窗。");
+            setIsSyncing(false);
+          }
         }
       };
 
@@ -177,7 +196,7 @@
 
       const manualUploadToCloud = async () => {
         if (!user || !db) return;
-        if (words.length === 0) { alert("目前沒有單字可上傳！"); return; }
+        if (words.length === 0) { alert("目前沒有單字可同步！"); return; }
         setIsSyncing(true);
         try {
           await db.collection('users').doc(user.uid).set({
@@ -398,7 +417,7 @@
 
       const renderImport = () => (
         <div className="flex flex-col items-center justify-center min-h-[75vh] py-8">
-          <div className="w-full bg-indigo-50/70 p-5 rounded-3xl shadow-sm border border-indigo-100 flex flex-col items-center mb-8">
+          <div className="w-full bg-indigo-50/70 p-5 rounded-3xl shadow-sm border border-indigo-100 flex flex-col items-center mb-6">
             <div className="text-3xl mb-2">☁️</div>
             <h3 className="text-lg font-bold text-gray-800 mb-1">雲端進度同步</h3>
             <p className="text-xs text-gray-500 text-center mb-4">登入 Google 帳號，跨裝置自動讀取你的字庫。</p>
@@ -409,7 +428,8 @@
               <div className="flex flex-col items-center w-full gap-2">
                 <span className="text-xs font-bold text-green-600">✅ 已登入：{user.email}</span>
                 <div className="flex gap-2 w-full">
-                  <button onClick={handleLogout} className="flex-1 py-2 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs">登出帳號</button>
+                  <button onClick={() => fetchCloudDataForUser(user)} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer">📥 立即從雲端還原</button>
+                  <button onClick={handleLogout} className="py-2 px-4 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs cursor-pointer">登出</button>
                 </div>
               </div>
             ) : (
