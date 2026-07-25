@@ -45,7 +45,7 @@
         db = firebase.firestore();
       }
     } catch(e) {
-      console.log("Firebase 初始化失敗，維持離線模式", e);
+      console.log("Firebase 初始化失敗", e);
     }
 
     const { useState, useEffect, useRef, useMemo } = React;
@@ -79,9 +79,9 @@
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v5';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v6';
 
-      // 初始化：監聽身分並決定初始畫面
+      // 1. 初始化與登入狀態監聽
       useEffect(() => {
         if (auth) {
           const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
@@ -91,19 +91,30 @@
               try {
                 const docRef = db.collection('users').doc(currentUser.uid);
                 const docSnap = await docRef.get();
-                // 如果雲端有資料，直接載入並跳轉到統計畫面
                 if (docSnap.exists && docSnap.data().words && docSnap.data().words.length > 0) {
+                  // 雲端有資料，直接採用雲端數據並跳轉到統計畫面
                   setWords(docSnap.data().words);
-                  setView('stats'); 
+                  setView('stats');
+                } else {
+                  // 雲端沒資料，檢查本機有無資料，有則自動上傳到雲端初始化
+                  const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+                  if (saved) {
+                    const parsed = JSON.parse(saved);
+                    if (parsed.length > 0) {
+                      setWords(parsed);
+                      await docRef.set({ words: parsed, updatedAt: new Date().toISOString() });
+                      setView('stats');
+                    }
+                  }
                 }
               } catch(e) {
-                console.error("雲端資料讀取失敗", e);
+                console.error("雲端同步錯誤", e);
               } finally {
                 setIsSyncing(false);
                 setAuthLoading(false);
               }
             } else {
-              // 沒登入，嘗試讀取本地儲存
+              // 未登入，載入本機資料
               loadLocalData();
               setAuthLoading(false);
             }
@@ -128,33 +139,29 @@
         }
       };
 
-      // 數據同步機制 (只有在非初次載入，且有變更時才同步)
+      // 2. 自動同步進度至雲端與本機
       useEffect(() => {
         if (words.length > 0 && !authLoading) {
           const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
           
-          if (user && db && !isSyncing) {
+          if (user && db) {
             db.collection('users').doc(user.uid).set({
               words: safeWords,
               updatedAt: new Date().toISOString()
-            }).catch(e => console.error("同步失敗", e));
+            }).catch(e => console.error("上傳雲端失敗", e));
           }
         }
       }, [words, user, db, authLoading]);
 
       const handleGoogleLogin = async () => {
-        if (!auth) {
-          alert("Firebase 未正常載入，請稍後再試。");
-          return;
-        }
+        if (!auth) return;
         try {
           const provider = new firebase.auth.GoogleAuthProvider();
           await auth.signInWithPopup(provider);
-          // 登入後 onAuthStateChanged 會自動觸發並抓取雲端資料
         } catch (e) {
           console.error(e);
-          alert("登入失敗，請確認設定或網路狀態。");
+          alert("登入失敗，請確認網路或 Firebase 設定。");
         }
       };
 
@@ -162,10 +169,26 @@
         if (auth) {
           await auth.signOut();
           setUser(null);
-          // 登出後清空當前畫面資料，回到上傳頁面
           setWords([]);
           setView('import');
-          alert("已成功登出，本機記憶體已重置。");
+          alert("已成功登出。");
+        }
+      };
+
+      const manualUploadToCloud = async () => {
+        if (!user || !db) return;
+        if (words.length === 0) { alert("目前沒有單字可上傳！"); return; }
+        setIsSyncing(true);
+        try {
+          await db.collection('users').doc(user.uid).set({
+            words: words,
+            updatedAt: new Date().toISOString()
+          });
+          alert("成功手動同步目前進度到雲端！");
+        } catch(e) {
+          alert("同步失敗");
+        } finally {
+          setIsSyncing(false);
         }
       };
 
@@ -233,21 +256,10 @@
           });
 
           const newWords = Array.from(uniqueMap.keys()).map(w => ({ word: w, status: 'new', note: '' }));
-          
-          // 如果是登入狀態，詢問是否要覆蓋雲端
-          if (user && words.length > 0) {
-             const confirmOverride = window.confirm("偵測到雲端已有單字記錄。上傳新檔案會覆蓋目前的進度，確定要繼續嗎？");
-             if(!confirmOverride) {
-                 setIsParsing(false);
-                 if (fileInputRef.current) fileInputRef.current.value = '';
-                 return;
-             }
-          }
-
           setWords(newWords);
           setStudyMode('all');
           setStudyIndex(0);
-          setView('stats'); // 上傳完跳到統計總覽
+          setView('stats');
         } catch (err) {
           alert("解析失敗，請確認檔案格式正確。");
         } finally {
@@ -384,29 +396,24 @@
         }
       };
 
-      // 修改：強化版的初始匯入頁面
       const renderImport = () => (
         <div className="flex flex-col items-center justify-center min-h-[75vh] py-8">
-          
-          {/* 登入區塊移到最上方 */}
           <div className="w-full bg-indigo-50/70 p-5 rounded-3xl shadow-sm border border-indigo-100 flex flex-col items-center mb-8">
             <div className="text-3xl mb-2">☁️</div>
             <h3 className="text-lg font-bold text-gray-800 mb-1">雲端進度同步</h3>
-            <p className="text-xs text-gray-500 text-center mb-4">登入 Google 帳號，自動還原之前的單字與進度，跨裝置無縫學習。</p>
+            <p className="text-xs text-gray-500 text-center mb-4">登入 Google 帳號，跨裝置自動讀取你的字庫。</p>
             
             {authLoading ? (
-               <div className="text-indigo-500 text-sm font-bold">正在檢查登入狀態...</div>
+               <div className="text-indigo-500 text-sm font-bold">檢查登入中...</div>
             ) : user ? (
-              <div className="flex flex-col items-center">
-                <span className="text-sm font-bold text-green-600 mb-2">✅ 已登入：{user.email}</span>
-                {isSyncing ? (
-                   <span className="text-xs text-indigo-600">同步雲端資料中...</span>
-                ) : (
-                  <button onClick={handleLogout} className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-xl text-sm font-bold shadow-xs">登出帳號</button>
-                )}
+              <div className="flex flex-col items-center w-full gap-2">
+                <span className="text-xs font-bold text-green-600">✅ 已登入：{user.email}</span>
+                <div className="flex gap-2 w-full">
+                  <button onClick={handleLogout} className="flex-1 py-2 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs">登出帳號</button>
+                </div>
               </div>
             ) : (
-              <button onClick={handleGoogleLogin} className="w-full py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow hover:bg-indigo-700 transition">
+              <button onClick={handleGoogleLogin} className="w-full py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow hover:bg-indigo-700 transition cursor-pointer">
                 使用 Google 帳號登入
               </button>
             )}
@@ -415,14 +422,13 @@
           <div className="text-center mb-4">
             <div className="flex items-center justify-center gap-2 mb-2 text-gray-400">
               <span className="h-px bg-gray-200 w-12"></span>
-              <span className="text-xs font-bold uppercase tracking-wider">或者建立新字庫</span>
+              <span className="text-xs font-bold uppercase tracking-wider">或上傳新 PDF</span>
               <span className="h-px bg-gray-200 w-12"></span>
             </div>
-            <h2 className="text-xl font-extrabold text-gray-800 mb-1">上傳單字文件</h2>
           </div>
 
-          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center relative overflow-hidden">
-             {isSyncing && <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center"><span className="text-indigo-600 font-bold">雲端還原中...</span></div>}
+          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center relative">
+             {isSyncing && <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-3xl"><span className="text-indigo-600 font-bold text-sm">雲端資料同步中...</span></div>}
             <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 mb-4 text-2xl border-2 border-dashed border-gray-200">📄</div>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt" className="hidden" />
             <button 
@@ -432,7 +438,6 @@
             >
               {isParsing ? parseStatus : "選擇 PDF 檔案上傳"}
             </button>
-            <p className="text-gray-400 text-[10px] mt-3">支援萃取大型 PDF 內的英文單字</p>
           </div>
         </div>
       );
@@ -549,15 +554,14 @@
                 <div>
                   <p className="text-xs font-bold text-gray-800">☁️ 雲端帳號同步</p>
                   <p className="text-[10px] text-gray-500">
-                    {user ? `已綁定: ${user.email}` : '尚未綁定 Google 帳號'}
+                    {user ? `已綁定: ${user.email}` : '尚未登入'}
                     {isSyncing && ' (同步中...)'}
                   </p>
                 </div>
-                {user ? (
-                  <button onClick={handleLogout} className="px-3 py-1.5 bg-white text-gray-700 border border-gray-300 rounded-lg text-xs font-bold shadow-xs cursor-pointer">登出</button>
-                ) : (
-                  <button onClick={handleGoogleLogin} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer">綁定 Google</button>
-                )}
+                <div className="flex gap-1.5">
+                  <button onClick={manualUploadToCloud} className="px-2.5 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer">同步雲端</button>
+                  <button onClick={handleLogout} className="px-2.5 py-1.5 bg-white text-gray-700 border border-gray-300 rounded-lg text-xs font-bold shadow-xs cursor-pointer">登出</button>
+                </div>
               </div>
 
               <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
@@ -733,5 +737,4 @@
   </script>
 </body>
 </html>
-
 
