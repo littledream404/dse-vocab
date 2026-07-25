@@ -84,7 +84,7 @@
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v11';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v12';
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -312,10 +312,11 @@
         }
       };
 
-      // 改用 Google Translate API 確保返回繁體中文 (zh-TW)
+      // 增強版 Google Translate API 請求 (獲取完整字典多重詞性結構)
       const fetchDefinitionApi = async (wordStr) => {
         let dictData = null;
         let transData = null;
+        let richTransData = []; // 用來存儲字典模式的陣列
         
         try {
           // 1. 抓取英文解釋
@@ -324,19 +325,39 @@
             dictData = (await dictRes.json())[0];
           }
           
-          // 2. 抓取中文翻譯 (Google Translate API - 確保繁體字)
-          const transRes = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(wordStr)}`);
+          // 2. 抓取中文翻譯 (加入 dt=bd 參數獲取完整字典資料)
+          const transRes = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(wordStr)}`);
           if (transRes.ok) {
             const transJson = await transRes.json();
+            
+            // 取得基礎翻譯 (當做備用)
             if (transJson && transJson[0] && transJson[0][0] && transJson[0][0][0]) {
                transData = transJson[0][0][0];
+            }
+            
+            // 取得字典多重詞性結構
+            if (transJson && transJson[1]) {
+               // 把英文詞性轉為中文以便閱讀
+               const posMap = {
+                 'noun': '名詞', 'verb': '動詞', 'adjective': '形容詞', 'adverb': '副詞',
+                 'pronoun': '代名詞', 'preposition': '介詞', 'conjunction': '連接詞', 'interjection': '感嘆詞',
+                 'abbreviation': '縮寫', 'prefix': '字首', 'suffix': '字尾'
+               };
+               
+               richTransData = transJson[1].map(item => {
+                 const rawPos = item[0] ? item[0].toLowerCase() : '';
+                 return {
+                   pos: posMap[rawPos] || item[0], // 若找不到對應，保留原詞性
+                   terms: item[1] // 對應詞性的翻譯列表
+                 };
+               });
             }
           }
         } catch (e) {
            console.error("API Fetch Error", e);
         }
         
-        return { dict: dictData, translation: transData };
+        return { dict: dictData, translation: transData, richTranslation: richTransData };
       };
 
       const fetchDefinitionForCard = async (wordStr) => {
@@ -344,7 +365,7 @@
         setDefinition(null);
         
         const result = await fetchDefinitionApi(wordStr);
-        if (result.dict || result.translation) {
+        if (result.dict || result.translation || result.richTranslation.length > 0) {
            setDefinition(result);
         } else {
            setDefinition({ notFound: true });
@@ -360,7 +381,7 @@
         setDetailDef(null);
 
         const result = await fetchDefinitionApi(item.word);
-        if (result.dict || result.translation) {
+        if (result.dict || result.translation || result.richTranslation.length > 0) {
            setDetailDef(result);
         } else {
            setDetailDef({ notFound: true });
@@ -575,15 +596,27 @@
                   <div className="overflow-y-auto pr-1 flex-grow mb-2">
                     {isLoadingDef ? <div className="text-center py-6 text-sm text-gray-500">載入字典與翻譯中...</div> : definition?.notFound ? <div className="text-gray-400 text-xs italic py-4">自訂單字，無線上解釋。</div> : (
                       <div className="text-sm space-y-3 pb-2">
-                        {/* 中文翻譯顯示 (若設定為 both 或 zh) */}
-                        {(defLang === 'both' || defLang === 'zh') && definition?.translation && (
-                           <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100">
-                             <div className="text-[10px] text-indigo-400 font-bold mb-1 uppercase tracking-wider">繁體中文翻譯</div>
-                             <div className="font-bold text-indigo-900 text-base">{definition.translation}</div>
+                        {/* 中文翻譯顯示 (支援多重詞性) */}
+                        {(defLang === 'both' || defLang === 'zh') && (definition?.translation || definition?.richTranslation?.length > 0) && (
+                           <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 mb-3">
+                             <div className="text-[10px] text-indigo-400 font-bold mb-2 uppercase tracking-wider">繁體中文翻譯</div>
+                             
+                             {definition.richTranslation && definition.richTranslation.length > 0 ? (
+                               <div className="space-y-2.5">
+                                 {definition.richTranslation.map((rt, idx) => (
+                                   <div key={idx} className="flex items-start text-sm">
+                                     <span className="inline-block px-1.5 py-0.5 bg-indigo-200 text-indigo-800 rounded text-[10px] font-bold mr-2 mt-0.5 shrink-0 whitespace-nowrap">{rt.pos}</span>
+                                     <span className="font-bold text-indigo-900 leading-relaxed">{rt.terms.join('、')}</span>
+                                   </div>
+                                 ))}
+                               </div>
+                             ) : (
+                               <div className="font-bold text-indigo-900 text-base">{definition.translation}</div>
+                             )}
                            </div>
                         )}
                         
-                        {/* 英文解釋顯示 (若設定為 both 或 en) */}
+                        {/* 英文解釋顯示 */}
                         {(defLang === 'both' || defLang === 'en') && definition?.dict?.meanings ? (
                            <div className="space-y-3">
                              <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-2">English Definition</div>
@@ -656,7 +689,7 @@
                 <label className="text-xs font-bold text-gray-700 block mb-2">🌐 解釋顯示語言：</label>
                 <select value={defLang} onChange={changeLangPreference} className="w-full p-2.5 text-sm border border-gray-200 rounded-lg outline-none bg-gray-50 text-gray-800 font-semibold cursor-pointer">
                   <option value="both">中英雙語對照 (建議)</option>
-                  <option value="zh">僅顯示繁體中文</option>
+                  <option value="zh">僅顯示繁體中文 (多重詞義)</option>
                   <option value="en">僅顯示英文解釋</option>
                 </select>
               </div>
@@ -805,11 +838,22 @@
                 <div className="flex-grow overflow-y-auto text-xs mb-3 max-h-[220px]">
                   {isLoadingDetailDef ? <div className="text-gray-400 text-center py-4">載入解釋中...</div> : detailDef?.notFound ? <div className="text-gray-400 py-2">無此單字解釋。</div> : (
                      <div className="space-y-3">
-                        {/* 模態框中的繁體中文翻譯 */}
-                        {(defLang === 'both' || defLang === 'zh') && detailDef?.translation && (
-                           <div className="bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100">
-                             <div className="text-[10px] text-indigo-400 font-bold mb-1 uppercase tracking-wider">繁體中文翻譯</div>
-                             <div className="font-bold text-indigo-900 text-sm">{detailDef.translation}</div>
+                        {/* 模態框中的繁體中文翻譯 (多重詞性) */}
+                        {(defLang === 'both' || defLang === 'zh') && (detailDef?.translation || detailDef?.richTranslation?.length > 0) && (
+                           <div className="bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
+                             <div className="text-[10px] text-indigo-400 font-bold mb-2 uppercase tracking-wider">繁體中文翻譯</div>
+                             {detailDef.richTranslation && detailDef.richTranslation.length > 0 ? (
+                               <div className="space-y-2.5">
+                                 {detailDef.richTranslation.map((rt, idx) => (
+                                   <div key={idx} className="flex items-start text-sm">
+                                     <span className="inline-block px-1.5 py-0.5 bg-indigo-200 text-indigo-800 rounded text-[10px] font-bold mr-2 mt-0.5 shrink-0 whitespace-nowrap">{rt.pos}</span>
+                                     <span className="font-bold text-indigo-900 leading-relaxed">{rt.terms.join('、')}</span>
+                                   </div>
+                                 ))}
+                               </div>
+                             ) : (
+                               <div className="font-bold text-indigo-900 text-sm">{detailDef.translation}</div>
+                             )}
                            </div>
                         )}
                         
