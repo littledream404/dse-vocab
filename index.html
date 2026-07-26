@@ -111,17 +111,14 @@
       const [isSyncing, setIsSyncing] = useState(false);
       const [authLoading, setAuthLoading] = useState(true);
       
-      // 核心安全鎖：只有在雲端資料成功下載且合併完成後，才允許覆蓋雲端
       const [isCloudReady, setIsCloudReady] = useState(false);
-
       const [defLang, setDefLang] = useState(localStorage.getItem('dse_vocab_lang') || 'both');
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null); 
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v16';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v17';
 
-      // 載入本機資料 (單純 UI 使用)
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
         if (saved) {
@@ -135,7 +132,6 @@
         }
       };
 
-      // 智慧且安全的合併：只在剛登入時執行一次
       const fetchCloudDataForUser = async (currentUser) => {
         if (!db || !currentUser) return;
         setIsSyncing(true);
@@ -148,7 +144,6 @@
              cloudWords = docSnap.data().words;
           }
 
-          // 直接從 localStorage 取得最準確的登入前本機資料，避免 React 狀態延遲
           let localWords = [];
           const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
           if (saved) {
@@ -157,7 +152,6 @@
 
           if (cloudWords.length > 0) {
             if (localWords.length > 0) {
-               // 進行合併：保留雲端，並加入本機獨有的新單字
                const cloudSet = new Set(cloudWords.map(w => w.word.toLowerCase()));
                const newWords = localWords.filter(w => !cloudSet.has(w.word.toLowerCase()));
 
@@ -165,11 +159,9 @@
                   const mergedWords = [...cloudWords, ...newWords];
                   setWords(mergedWords);
                   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mergedWords));
-                  // 合併後上傳
                   await docRef.set({ words: mergedWords, updatedAt: new Date().toISOString() });
                   alert(`登入成功！已將你剛剛建立的 ${newWords.length} 個新單字安全合併至雲端。`);
                } else {
-                  // 沒有新單字，直接採用雲端
                   setWords(cloudWords);
                   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
                }
@@ -178,15 +170,14 @@
                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
             }
           } else {
-            // 雲端是空的，直接把本機資料傳上去
             if (localWords.length > 0) {
                setWords(localWords);
                await docRef.set({ words: localWords, updatedAt: new Date().toISOString() });
             }
           }
           
-          setIsCloudReady(true); // 解除安全鎖，允許之後的操作同步到雲端
-          setView('stats');
+          setIsCloudReady(true); 
+          setView(cloudWords.length > 0 || localWords.length > 0 ? 'stats' : 'import');
         } catch(e) {
           console.error("雲端讀取錯誤", e);
         } finally {
@@ -194,7 +185,6 @@
         }
       };
 
-      // 監聽登入狀態
       useEffect(() => {
         if (auth) {
           const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
@@ -202,7 +192,7 @@
             if (currentUser) {
               await fetchCloudDataForUser(currentUser);
             } else {
-              setIsCloudReady(false); // 登出時鎖上安全鎖
+              setIsCloudReady(false); 
               loadLocalData();
             }
             setAuthLoading(false);
@@ -218,14 +208,11 @@
         }
       }, []);
 
-      // 分離本機與雲端的自動同步 (防止競態條件)
       useEffect(() => {
         if (words.length > 0) {
-          // 1. 永遠安全地備份到本機
           const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
           
-          // 2. 只有在「登入且雲端資料已安全下載完成 (isCloudReady)」時，才允許覆蓋雲端
           if (user && db && isCloudReady && !authLoading) {
             db.collection('users').doc(user.uid).set({
               words: safeWords,
@@ -235,7 +222,6 @@
         }
       }, [words, user, db, isCloudReady, authLoading]);
 
-      // 登入功能不再強制觸發 fetchCloudDataForUser，交給 onAuthStateChanged 統一處理
       const handleGoogleLogin = async () => {
         if (!auth) return;
         setIsSyncing(true);
@@ -558,7 +544,7 @@
 
       const executeClearAll = () => {
         setWords([]);
-        localStorage.clear();
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
         if (user && db) {
           db.collection('users').doc(user.uid).delete();
         }
@@ -598,8 +584,7 @@
               <div className="flex flex-col items-center w-full gap-2">
                 <span className="text-xs font-bold text-green-600">✅ 已登入：{user.email}</span>
                 <div className="flex gap-2 w-full">
-                  <button onClick={() => fetchCloudDataForUser(user)} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer">📥 立即從雲端還原</button>
-                  <button onClick={handleLogout} className="py-2 px-4 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs cursor-pointer">登出</button>
+                  <button onClick={handleLogout} className="w-full py-2 px-4 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs cursor-pointer">登出</button>
                 </div>
               </div>
             ) : (
@@ -651,7 +636,18 @@
       );
 
       const renderStudy = () => {
-        if (words.length === 0) return null;
+        // 修正 1：如果 words 陣列完全沒東西，不再回傳 null 導致白畫面，而是顯示友善的空狀態
+        if (!words || words.length === 0) {
+          return (
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <div className="text-4xl mb-4">📭</div>
+              <h2 className="text-xl font-bold text-gray-800 mb-2">字庫是空的！</h2>
+              <p className="text-xs text-gray-500 mb-6">你目前沒有任何單字記錄。<br/>請先建立或匯入單字後再開始溫習。</p>
+              <button onClick={() => setView('import')} className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-lg shadow cursor-pointer">前往建立字庫</button>
+            </div>
+          );
+        }
+
         if (studyList.length === 0) {
           return (
             <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -664,7 +660,7 @@
         }
 
         const currentWordObj = studyList[studyIndex] || studyList[0];
-        if (!currentWordObj) return null;
+        if (!currentWordObj) return null; // 保險機制
 
         const progress = Math.round(((studyIndex + 1) / studyList.length) * 100);
         const modeLabels = { 'all': '全部', 'new': '未學', 'review': '錯題複習', 'known': '已掌握' };
@@ -832,7 +828,16 @@
                   <option value="review">🔄 只溫習「需複習」的錯題</option>
                   <option value="known">✅ 只溫習「已掌握」的單字</option>
                 </select>
-                <button onClick={() => { setStudyIndex(0); setView('study'); }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg text-sm shadow hover:bg-indigo-700 cursor-pointer">開始溫習</button>
+                <button onClick={() => { 
+                  // 修正 2：如果單字庫是空的，點擊開始溫習時給出提示並返回 import
+                  if (!words || words.length === 0) {
+                     alert("請先加入單字才能開始溫習喔！");
+                     setView('import');
+                     return;
+                  }
+                  setStudyIndex(0); 
+                  setView('study'); 
+                }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg text-sm shadow hover:bg-indigo-700 cursor-pointer">開始溫習</button>
               </div>
 
               <button onClick={() => setView('list')} className="w-full py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-xl text-xs hover:bg-gray-50 cursor-pointer">進入字庫管理 (點擊單字可看解釋與加備註)</button>
@@ -947,7 +952,8 @@
         <div className="min-h-screen bg-slate-50 font-sans pb-16">
           <header className="bg-white shadow-xs sticky top-0 z-20">
             <div className="max-w-md mx-auto px-4 h-14 flex items-center justify-between">
-              <div className="flex items-center text-indigo-600 cursor-pointer" onClick={() => words.length > 0 && setView('stats')}>
+              {/* 修正 3：點擊 LOGO 的智能導航。如果沒單字帶你去建立，有單字帶你去統計 */}
+              <div className="flex items-center text-indigo-600 cursor-pointer" onClick={() => setView((words && words.length > 0) ? 'stats' : 'import')}>
                 <span className="text-lg mr-1.5">✨</span>
                 <h1 className="font-bold text-sm tracking-tight">DSE 5000+ 單字神器</h1>
               </div>
