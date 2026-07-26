@@ -52,7 +52,6 @@
 
     const { useState, useEffect, useRef, useMemo, Component } = React;
 
-    // React 錯誤邊界，防止白屏
     class ErrorBoundary extends Component {
       constructor(props) {
         super(props);
@@ -97,7 +96,7 @@
       const [sortBy, setSortBy] = useState('alpha');
       
       const [customWordInput, setCustomWordInput] = useState('');
-      const [initialManualInput, setInitialManualInput] = useState(''); // 初始畫面專用輸入框
+      const [initialManualInput, setInitialManualInput] = useState(''); 
       
       const [wordToDelete, setWordToDelete] = useState(null);
       const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
@@ -116,8 +115,14 @@
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const appendFileInputRef = useRef(null); // 追加檔案專用 Ref
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v14';
+      const appendFileInputRef = useRef(null); 
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v15';
+      const wordsRef = useRef(words);
+
+      // 保持 wordsRef 永遠是最新的狀態，供登入時合併使用
+      useEffect(() => {
+        wordsRef.current = words;
+      }, [words]);
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -132,27 +137,47 @@
         }
       };
 
-      const fetchCloudDataForUser = async (currentUser) => {
+      // 智慧合併：將登入前建立的單字與雲端單字合併
+      const fetchCloudDataForUser = async (currentUser, currentLocalWords = []) => {
         if (!db || !currentUser) return;
         setIsSyncing(true);
         try {
           const docRef = db.collection('users').doc(currentUser.uid);
           const docSnap = await docRef.get();
-          if (docSnap.exists && docSnap.data().words && Array.isArray(docSnap.data().words) && docSnap.data().words.length > 0) {
-            const cloudWords = docSnap.data().words;
-            setWords(cloudWords);
-            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
+          
+          let cloudWords = [];
+          if (docSnap.exists && docSnap.data().words && Array.isArray(docSnap.data().words)) {
+             cloudWords = docSnap.data().words;
+          }
+
+          if (cloudWords.length > 0) {
+            if (currentLocalWords.length > 0) {
+               // 執行合併 (去除重複)
+               const cloudSet = new Set(cloudWords.map(w => w.word.toLowerCase()));
+               const newWords = currentLocalWords.filter(w => !cloudSet.has(w.word.toLowerCase()));
+
+               if (newWords.length > 0) {
+                  const mergedWords = [...cloudWords, ...newWords];
+                  setWords(mergedWords);
+                  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mergedWords));
+                  await docRef.set({ words: mergedWords, updatedAt: new Date().toISOString() });
+                  alert(`登入成功！已將你剛剛建立的 ${newWords.length} 個新單字合併至雲端。`);
+               } else {
+                  setWords(cloudWords);
+                  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
+               }
+            } else {
+               setWords(cloudWords);
+               localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
+            }
             setView('stats');
           } else {
-            const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-            if (saved) {
-              const parsed = JSON.parse(saved);
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                setWords(parsed);
-                await docRef.set({ words: parsed, updatedAt: new Date().toISOString() });
-                setView('stats');
-              }
+            // 雲端是空的，直接上傳本機內容
+            if (currentLocalWords.length > 0) {
+               setWords(currentLocalWords);
+               await docRef.set({ words: currentLocalWords, updatedAt: new Date().toISOString() });
             }
+            setView('stats');
           }
         } catch(e) {
           console.error("雲端讀取錯誤", e);
@@ -166,7 +191,15 @@
           const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
             setUser(currentUser);
             if (currentUser) {
-              await fetchCloudDataForUser(currentUser);
+              // 取得本機最新的單字紀錄進行比對
+              let localW = wordsRef.current;
+              if (localW.length === 0) {
+                 const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+                 if (saved) {
+                    try { localW = JSON.parse(saved); } catch(e){}
+                 }
+              }
+              await fetchCloudDataForUser(currentUser, localW);
             } else {
               loadLocalData();
             }
@@ -205,7 +238,7 @@
           const result = await auth.signInWithPopup(provider);
           if (result.user) {
             setUser(result.user);
-            await fetchCloudDataForUser(result.user); 
+            await fetchCloudDataForUser(result.user, wordsRef.current); 
           }
         } catch (e) {
           try {
@@ -270,7 +303,6 @@
         });
       };
 
-      // 核心：從字串中萃取乾淨的單字陣列 (過濾重複與現有單字)
       const processExtractedText = (fullText, existingWords = []) => {
         const extracted = fullText.match(/\b[a-zA-Z-]+\b/g);
         if (!extracted) return [];
@@ -288,12 +320,10 @@
         return Array.from(uniqueMap.keys()).map(w => ({ word: w, status: 'new', note: '' }));
       };
 
-      // 修改：支援 PDF與相片上傳，並支援「覆蓋」或「追加(Append)」
       const handleFileUpload = async (e, isAppending = false) => {
         const file = e.target.files[0];
         if (!file) return;
         
-        // 若不是追加，且目前有資料，提醒使用者會覆蓋
         if (!isAppending && words.length > 0) {
           if (!window.confirm("偵測到已有單字記錄。上傳新檔案會覆蓋目前的進度，確定要繼續嗎？ (若要保留，請至字庫管理頁面追加檔案)")) {
              if (fileInputRef.current) fileInputRef.current.value = '';
@@ -308,7 +338,6 @@
           let fullText = '';
 
           if (file.type === 'application/pdf') {
-            // PDF 解析
             setParseStatus('讀取 PDF 中...');
             const buffer = await file.arrayBuffer();
             const pdfjs = await loadPdfJs();
@@ -321,7 +350,6 @@
               fullText += content.items.map(item => item.str).join(' ') + ' ';
             }
           } else if (file.type.startsWith('image/')) {
-            // 圖片 OCR 解析
             setParseStatus('啟動圖片辨識引擎... (首次可能需數秒)');
             if (!window.Tesseract) throw new Error("圖片辨識套件未載入");
             
@@ -368,11 +396,9 @@
         }
       };
 
-      // 處理初始畫面的手動文字輸入
       const handleInitialManualInputSubmit = () => {
          if (!initialManualInput.trim()) return;
          
-         // 如果有舊記錄要覆蓋需提醒
          if (words.length > 0) {
             if (!window.confirm("這會覆蓋目前的單字紀錄，確定嗎？ (要追加請到字庫管理)")) return;
          }
@@ -535,7 +561,6 @@
         alert("已徹底清空所有記錄！");
       };
 
-      // 列表頁面的「手動快速輸入新增」
       const handleAddCustomWords = () => {
         if (!customWordInput.trim()) return;
         const newWords = processExtractedText(customWordInput, words);
@@ -554,8 +579,6 @@
           localStorage.setItem('dse_vocab_lang', e.target.value);
       }
 
-      // -- 渲染組件區域 --
-
       const renderImport = () => (
         <div className="flex flex-col items-center justify-center min-h-[75vh] py-8">
           <div className="w-full bg-indigo-50/70 p-5 rounded-3xl shadow-sm border border-indigo-100 flex flex-col items-center mb-6">
@@ -569,7 +592,7 @@
               <div className="flex flex-col items-center w-full gap-2">
                 <span className="text-xs font-bold text-green-600">✅ 已登入：{user.email}</span>
                 <div className="flex gap-2 w-full">
-                  <button onClick={() => fetchCloudDataForUser(user)} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer">📥 立即從雲端還原</button>
+                  <button onClick={() => fetchCloudDataForUser(user, wordsRef.current)} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer">📥 立即從雲端還原</button>
                   <button onClick={handleLogout} className="py-2 px-4 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs cursor-pointer">登出</button>
                 </div>
               </div>
@@ -588,7 +611,6 @@
             </div>
           </div>
 
-          {/* 上傳檔案區 */}
           <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center relative mb-6">
              {isSyncing && <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-3xl"><span className="text-indigo-600 font-bold text-sm">雲端資料同步中...</span></div>}
             <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 mb-4 text-2xl border-2 border-dashed border-gray-200">📸</div>
@@ -603,7 +625,6 @@
             <p className="text-[10px] text-gray-400 mt-3 text-center">支援截圖或相片文字辨識提取單字</p>
           </div>
           
-          {/* 手動輸入區 */}
           <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center">
              <label className="text-xs font-bold text-gray-700 w-full mb-2">✍️ 直接輸入或貼上單字：</label>
              <textarea 
@@ -776,9 +797,16 @@
                     {isSyncing && ' (同步中...)'}
                   </p>
                 </div>
+                {/* 修正：如果未登入，顯示綁定按鈕；如果已登入，顯示同步和登出按鈕 */}
                 <div className="flex gap-1.5">
-                  <button onClick={manualUploadToCloud} className="px-2.5 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer">同步雲端</button>
-                  <button onClick={handleLogout} className="px-2.5 py-1.5 bg-white text-gray-700 border border-gray-300 rounded-lg text-xs font-bold shadow-xs cursor-pointer">登出</button>
+                  {user ? (
+                    <>
+                      <button onClick={manualUploadToCloud} className="px-2.5 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer">同步雲端</button>
+                      <button onClick={handleLogout} className="px-2.5 py-1.5 bg-white text-gray-700 border border-gray-300 rounded-lg text-xs font-bold shadow-xs cursor-pointer">登出</button>
+                    </>
+                  ) : (
+                    <button onClick={handleGoogleLogin} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer hover:bg-indigo-700">綁定 Google 登入</button>
+                  )}
                 </div>
               </div>
               
@@ -831,7 +859,6 @@
               <button onClick={() => setView('stats')} className="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-lg text-xs shadow cursor-pointer">返回統計</button>
             </div>
 
-            {/* 新增：追加檔案功能區塊 */}
             <div className="bg-white p-3 rounded-xl shadow-sm border border-indigo-100 mb-3 text-center">
                <p className="text-[10px] text-gray-500 mb-2">想從其他教材加入更多單字？</p>
                <input type="file" ref={appendFileInputRef} onChange={(e) => handleFileUpload(e, true)} accept=".pdf,.txt,image/*" className="hidden" />
