@@ -110,20 +110,18 @@
       const [user, setUser] = useState(null);
       const [isSyncing, setIsSyncing] = useState(false);
       const [authLoading, setAuthLoading] = useState(true);
+      
+      // 核心安全鎖：只有在雲端資料成功下載且合併完成後，才允許覆蓋雲端
+      const [isCloudReady, setIsCloudReady] = useState(false);
 
       const [defLang, setDefLang] = useState(localStorage.getItem('dse_vocab_lang') || 'both');
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null); 
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v15';
-      const wordsRef = useRef(words);
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v16';
 
-      // 保持 wordsRef 永遠是最新的狀態，供登入時合併使用
-      useEffect(() => {
-        wordsRef.current = words;
-      }, [words]);
-
+      // 載入本機資料 (單純 UI 使用)
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
         if (saved) {
@@ -137,8 +135,8 @@
         }
       };
 
-      // 智慧合併：將登入前建立的單字與雲端單字合併
-      const fetchCloudDataForUser = async (currentUser, currentLocalWords = []) => {
+      // 智慧且安全的合併：只在剛登入時執行一次
+      const fetchCloudDataForUser = async (currentUser) => {
         if (!db || !currentUser) return;
         setIsSyncing(true);
         try {
@@ -150,19 +148,28 @@
              cloudWords = docSnap.data().words;
           }
 
+          // 直接從 localStorage 取得最準確的登入前本機資料，避免 React 狀態延遲
+          let localWords = [];
+          const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+          if (saved) {
+             try { localWords = JSON.parse(saved); } catch(e){}
+          }
+
           if (cloudWords.length > 0) {
-            if (currentLocalWords.length > 0) {
-               // 執行合併 (去除重複)
+            if (localWords.length > 0) {
+               // 進行合併：保留雲端，並加入本機獨有的新單字
                const cloudSet = new Set(cloudWords.map(w => w.word.toLowerCase()));
-               const newWords = currentLocalWords.filter(w => !cloudSet.has(w.word.toLowerCase()));
+               const newWords = localWords.filter(w => !cloudSet.has(w.word.toLowerCase()));
 
                if (newWords.length > 0) {
                   const mergedWords = [...cloudWords, ...newWords];
                   setWords(mergedWords);
                   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mergedWords));
+                  // 合併後上傳
                   await docRef.set({ words: mergedWords, updatedAt: new Date().toISOString() });
-                  alert(`登入成功！已將你剛剛建立的 ${newWords.length} 個新單字合併至雲端。`);
+                  alert(`登入成功！已將你剛剛建立的 ${newWords.length} 個新單字安全合併至雲端。`);
                } else {
+                  // 沒有新單字，直接採用雲端
                   setWords(cloudWords);
                   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
                }
@@ -170,15 +177,16 @@
                setWords(cloudWords);
                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
             }
-            setView('stats');
           } else {
-            // 雲端是空的，直接上傳本機內容
-            if (currentLocalWords.length > 0) {
-               setWords(currentLocalWords);
-               await docRef.set({ words: currentLocalWords, updatedAt: new Date().toISOString() });
+            // 雲端是空的，直接把本機資料傳上去
+            if (localWords.length > 0) {
+               setWords(localWords);
+               await docRef.set({ words: localWords, updatedAt: new Date().toISOString() });
             }
-            setView('stats');
           }
+          
+          setIsCloudReady(true); // 解除安全鎖，允許之後的操作同步到雲端
+          setView('stats');
         } catch(e) {
           console.error("雲端讀取錯誤", e);
         } finally {
@@ -186,21 +194,15 @@
         }
       };
 
+      // 監聽登入狀態
       useEffect(() => {
         if (auth) {
           const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
             setUser(currentUser);
             if (currentUser) {
-              // 取得本機最新的單字紀錄進行比對
-              let localW = wordsRef.current;
-              if (localW.length === 0) {
-                 const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-                 if (saved) {
-                    try { localW = JSON.parse(saved); } catch(e){}
-                 }
-              }
-              await fetchCloudDataForUser(currentUser, localW);
+              await fetchCloudDataForUser(currentUser);
             } else {
+              setIsCloudReady(false); // 登出時鎖上安全鎖
               loadLocalData();
             }
             setAuthLoading(false);
@@ -216,30 +218,30 @@
         }
       }, []);
 
+      // 分離本機與雲端的自動同步 (防止競態條件)
       useEffect(() => {
-        if (words.length > 0 && !authLoading) {
+        if (words.length > 0) {
+          // 1. 永遠安全地備份到本機
           const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
           
-          if (user && db) {
+          // 2. 只有在「登入且雲端資料已安全下載完成 (isCloudReady)」時，才允許覆蓋雲端
+          if (user && db && isCloudReady && !authLoading) {
             db.collection('users').doc(user.uid).set({
               words: safeWords,
               updatedAt: new Date().toISOString()
-            }).catch(e => console.error("自動同步失敗", e));
+            }).catch(e => console.error("自動同步雲端失敗", e));
           }
         }
-      }, [words, user, db, authLoading]);
+      }, [words, user, db, isCloudReady, authLoading]);
 
+      // 登入功能不再強制觸發 fetchCloudDataForUser，交給 onAuthStateChanged 統一處理
       const handleGoogleLogin = async () => {
         if (!auth) return;
         setIsSyncing(true);
         try {
           const provider = new firebase.auth.GoogleAuthProvider();
-          const result = await auth.signInWithPopup(provider);
-          if (result.user) {
-            setUser(result.user);
-            await fetchCloudDataForUser(result.user, wordsRef.current); 
-          }
+          await auth.signInWithPopup(provider);
         } catch (e) {
           try {
             await auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
@@ -254,6 +256,7 @@
         if (auth) {
           await auth.signOut();
           setUser(null);
+          setIsCloudReady(false);
           setWords([]);
           setView('import');
           alert("已成功登出。");
@@ -261,7 +264,10 @@
       };
 
       const manualUploadToCloud = async () => {
-        if (!user || !db) return;
+        if (!user || !db || !isCloudReady) {
+            alert("雲端連線尚未就緒，請稍後再試！");
+            return;
+        }
         if (words.length === 0) { alert("目前沒有單字可同步！"); return; }
         setIsSyncing(true);
         try {
@@ -592,7 +598,7 @@
               <div className="flex flex-col items-center w-full gap-2">
                 <span className="text-xs font-bold text-green-600">✅ 已登入：{user.email}</span>
                 <div className="flex gap-2 w-full">
-                  <button onClick={() => fetchCloudDataForUser(user, wordsRef.current)} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer">📥 立即從雲端還原</button>
+                  <button onClick={() => fetchCloudDataForUser(user)} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow cursor-pointer">📥 立即從雲端還原</button>
                   <button onClick={handleLogout} className="py-2 px-4 bg-white text-gray-700 border border-gray-300 rounded-xl text-xs font-bold shadow-xs cursor-pointer">登出</button>
                 </div>
               </div>
@@ -797,7 +803,6 @@
                     {isSyncing && ' (同步中...)'}
                   </p>
                 </div>
-                {/* 修正：如果未登入，顯示綁定按鈕；如果已登入，顯示同步和登出按鈕 */}
                 <div className="flex gap-1.5">
                   {user ? (
                     <>
