@@ -11,6 +11,8 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Tesseract.js (OCR 圖片辨識) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -93,7 +95,10 @@
       const [searchQuery, setSearchQuery] = useState('');
       const [listFilter, setListFilter] = useState('all');
       const [sortBy, setSortBy] = useState('alpha');
+      
       const [customWordInput, setCustomWordInput] = useState('');
+      const [initialManualInput, setInitialManualInput] = useState(''); // 初始畫面專用輸入框
+      
       const [wordToDelete, setWordToDelete] = useState(null);
       const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
       const [activeDetailWord, setActiveDetailWord] = useState(null);
@@ -111,7 +116,8 @@
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v13';
+      const appendFileInputRef = useRef(null); // 追加檔案專用 Ref
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v14';
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -264,56 +270,121 @@
         });
       };
 
-      const handleFileUpload = async (e) => {
+      // 核心：從字串中萃取乾淨的單字陣列 (過濾重複與現有單字)
+      const processExtractedText = (fullText, existingWords = []) => {
+        const extracted = fullText.match(/\b[a-zA-Z-]+\b/g);
+        if (!extracted) return [];
+
+        const ignoreList = new Set(['page', 'vocabularylist', 'words', 'p']);
+        const currentSet = new Set(existingWords.map(w => w.word.toLowerCase()));
+        const uniqueMap = new Map();
+
+        extracted.forEach(w => {
+          let clean = w.toLowerCase().replace(/^[-]+|[-]+$/g, '');
+          if ((clean.length > 1 || clean === 'a' || clean === 'i') && !ignoreList.has(clean) && !clean.startsWith('vocabularylist') && !currentSet.has(clean)) {
+            uniqueMap.set(clean, true);
+          }
+        });
+        return Array.from(uniqueMap.keys()).map(w => ({ word: w, status: 'new', note: '' }));
+      };
+
+      // 修改：支援 PDF與相片上傳，並支援「覆蓋」或「追加(Append)」
+      const handleFileUpload = async (e, isAppending = false) => {
         const file = e.target.files[0];
         if (!file) return;
+        
+        // 若不是追加，且目前有資料，提醒使用者會覆蓋
+        if (!isAppending && words.length > 0) {
+          if (!window.confirm("偵測到已有單字記錄。上傳新檔案會覆蓋目前的進度，確定要繼續嗎？ (若要保留，請至字庫管理頁面追加檔案)")) {
+             if (fileInputRef.current) fileInputRef.current.value = '';
+             return;
+          }
+        }
+
         setIsParsing(true);
-        setParseStatus('初始化解析引擎...');
+        setParseStatus('處理檔案中...');
 
         try {
-          const buffer = await file.arrayBuffer();
-          const pdfjs = await loadPdfJs();
-          const pdf = await pdfjs.getDocument({ data: buffer }).promise;
           let fullText = '';
 
-          for (let i = 1; i <= pdf.numPages; i++) {
-            if (i % 5 === 0) {
-              setParseStatus(`解析頁面 (${i}/${pdf.numPages})...`);
-              await new Promise(r => setTimeout(r, 10));
+          if (file.type === 'application/pdf') {
+            // PDF 解析
+            setParseStatus('讀取 PDF 中...');
+            const buffer = await file.arrayBuffer();
+            const pdfjs = await loadPdfJs();
+            const pdf = await pdfjs.getDocument({ data: buffer }).promise;
+
+            for (let i = 1; i <= pdf.numPages; i++) {
+              if (i % 5 === 0) setParseStatus(`解析 PDF 頁面 (${i}/${pdf.numPages})...`);
+              const page = await pdf.getPage(i);
+              const content = await page.getTextContent();
+              fullText += content.items.map(item => item.str).join(' ') + ' ';
             }
-            const page = await pdf.getPage(i);
-            const content = await page.getTextContent();
-            fullText += content.items.map(item => item.str).join(' ') + ' ';
+          } else if (file.type.startsWith('image/')) {
+            // 圖片 OCR 解析
+            setParseStatus('啟動圖片辨識引擎... (首次可能需數秒)');
+            if (!window.Tesseract) throw new Error("圖片辨識套件未載入");
+            
+            const result = await Tesseract.recognize(file, 'eng', {
+              logger: m => {
+                if (m.status === 'recognizing text') {
+                  setParseStatus(`正在辨識文字中... (${Math.round(m.progress * 100)}%)`);
+                }
+              }
+            });
+            fullText = result.data.text;
+          } else if (file.type === 'text/plain') {
+            fullText = await file.text();
+          } else {
+            throw new Error("不支援的檔案格式，請上傳 PDF、TXT 或圖片檔");
           }
 
           setParseStatus('過濾雜訊與重複單字...');
-          await new Promise(r => setTimeout(r, 10));
+          
+          const existingList = isAppending ? words : [];
+          const newWords = processExtractedText(fullText, existingList);
 
-          const extracted = fullText.match(/\b[a-zA-Z-]+\b/g);
-          if (!extracted) throw new Error("找不到英文單字");
-
-          const ignoreList = new Set(['page', 'vocabularylist', 'words', 'p']);
-          const uniqueMap = new Map();
-
-          extracted.forEach(w => {
-            let clean = w.toLowerCase().replace(/^[-]+|[-]+$/g, '');
-            if ((clean.length > 1 || clean === 'a' || clean === 'i') && !ignoreList.has(clean) && !clean.startsWith('vocabularylist')) {
-              uniqueMap.set(clean, true);
+          if (newWords.length === 0) {
+            alert("找不到新的英文單字！(可能字庫中已存在)");
+          } else {
+            if (isAppending) {
+               setWords(prev => [...prev, ...newWords]);
+               alert(`成功從檔案辨識並追加了 ${newWords.length} 個新單字！`);
+            } else {
+               setWords(newWords);
+               setView('stats');
             }
-          });
-
-          const newWords = Array.from(uniqueMap.keys()).map(w => ({ word: w, status: 'new', note: '' }));
-          setWords(newWords);
-          setStudyMode('all');
-          setStudyIndex(0);
-          setView('stats');
+            setStudyMode('all');
+            setStudyIndex(0);
+          }
         } catch (err) {
-          alert("解析失敗，請確認檔案格式正確。");
+          console.error(err);
+          alert("解析失敗：" + err.message);
         } finally {
           setIsParsing(false);
           setParseStatus('');
           if (fileInputRef.current) fileInputRef.current.value = '';
+          if (appendFileInputRef.current) appendFileInputRef.current.value = '';
         }
+      };
+
+      // 處理初始畫面的手動文字輸入
+      const handleInitialManualInputSubmit = () => {
+         if (!initialManualInput.trim()) return;
+         
+         // 如果有舊記錄要覆蓋需提醒
+         if (words.length > 0) {
+            if (!window.confirm("這會覆蓋目前的單字紀錄，確定嗎？ (要追加請到字庫管理)")) return;
+         }
+         
+         const newWords = processExtractedText(initialManualInput, []);
+         if (newWords.length > 0) {
+            setWords(newWords);
+            setInitialManualInput('');
+            setView('stats');
+         } else {
+            alert("找不到有效的單字！");
+         }
       };
 
       const speakWord = (wordStr, accent = 'US', e) => {
@@ -464,27 +535,17 @@
         alert("已徹底清空所有記錄！");
       };
 
+      // 列表頁面的「手動快速輸入新增」
       const handleAddCustomWords = () => {
         if (!customWordInput.trim()) return;
-        const extracted = customWordInput.match(/\b[a-zA-Z-]+\b/g);
-        if (!extracted) { alert("無效的單字"); return; }
-
-        const currentSet = new Set(words.map(w => w.word));
-        const newAdditions = [];
-        extracted.forEach(w => {
-          const lower = w.toLowerCase();
-          if (!currentSet.has(lower)) {
-            newAdditions.push({ word: lower, status: 'new', note: '' });
-            currentSet.add(lower);
-          }
-        });
-
-        if (newAdditions.length > 0) {
-          setWords(prev => [...prev, ...newAdditions]);
-          alert(`新增了 ${newAdditions.length} 個單字！`);
+        const newWords = processExtractedText(customWordInput, words);
+        
+        if (newWords.length > 0) {
+          setWords(prev => [...prev, ...newWords]);
+          alert(`成功追加了 ${newWords.length} 個單字！`);
           setCustomWordInput('');
         } else {
-          alert("單字皆已存在。");
+          alert("單字皆已存在或無效。");
         }
       };
       
@@ -492,6 +553,8 @@
           setDefLang(e.target.value);
           localStorage.setItem('dse_vocab_lang', e.target.value);
       }
+
+      // -- 渲染組件區域 --
 
       const renderImport = () => (
         <div className="flex flex-col items-center justify-center min-h-[75vh] py-8">
@@ -520,22 +583,42 @@
           <div className="text-center mb-4">
             <div className="flex items-center justify-center gap-2 mb-2 text-gray-400">
               <span className="h-px bg-gray-200 w-12"></span>
-              <span className="text-xs font-bold uppercase tracking-wider">或上傳新 PDF</span>
+              <span className="text-xs font-bold uppercase tracking-wider">或建立全新字庫</span>
               <span className="h-px bg-gray-200 w-12"></span>
             </div>
           </div>
 
-          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center relative">
+          {/* 上傳檔案區 */}
+          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center relative mb-6">
              {isSyncing && <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-3xl"><span className="text-indigo-600 font-bold text-sm">雲端資料同步中...</span></div>}
-            <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 mb-4 text-2xl border-2 border-dashed border-gray-200">📄</div>
-            <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt" className="hidden" />
+            <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 mb-4 text-2xl border-2 border-dashed border-gray-200">📸</div>
+            <input type="file" ref={fileInputRef} onChange={(e) => handleFileUpload(e, false)} accept=".pdf,.txt,image/*" className="hidden" />
             <button 
               onClick={() => fileInputRef.current.click()} 
               disabled={isParsing || isSyncing}
               className="w-full py-3 px-6 bg-gray-800 text-white font-bold rounded-xl shadow hover:bg-gray-900 transition flex justify-center text-sm disabled:opacity-50 cursor-pointer"
             >
-              {isParsing ? parseStatus : "選擇 PDF 檔案上傳"}
+              {isParsing ? parseStatus : "上傳相片/圖片/PDF 自動辨識"}
             </button>
+            <p className="text-[10px] text-gray-400 mt-3 text-center">支援截圖或相片文字辨識提取單字</p>
+          </div>
+          
+          {/* 手動輸入區 */}
+          <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center">
+             <label className="text-xs font-bold text-gray-700 w-full mb-2">✍️ 直接輸入或貼上單字：</label>
+             <textarea 
+               value={initialManualInput} 
+               onChange={(e) => setInitialManualInput(e.target.value)}
+               placeholder="例如：apple banana cat... (系統會自動過濾整理)" 
+               className="w-full text-xs p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none resize-none h-24 mb-3"
+             />
+             <button 
+               onClick={handleInitialManualInputSubmit}
+               disabled={!initialManualInput.trim() || isParsing}
+               className="w-full py-2.5 px-6 bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold rounded-xl hover:bg-indigo-100 transition text-sm disabled:opacity-50 cursor-pointer"
+             >
+               確認建立字庫
+             </button>
           </div>
         </div>
       );
@@ -748,6 +831,19 @@
               <button onClick={() => setView('stats')} className="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-lg text-xs shadow cursor-pointer">返回統計</button>
             </div>
 
+            {/* 新增：追加檔案功能區塊 */}
+            <div className="bg-white p-3 rounded-xl shadow-sm border border-indigo-100 mb-3 text-center">
+               <p className="text-[10px] text-gray-500 mb-2">想從其他教材加入更多單字？</p>
+               <input type="file" ref={appendFileInputRef} onChange={(e) => handleFileUpload(e, true)} accept=".pdf,.txt,image/*" className="hidden" />
+               <button 
+                  onClick={() => appendFileInputRef.current.click()} 
+                  disabled={isParsing}
+                  className="w-full py-2 bg-indigo-50 text-indigo-700 font-bold rounded-lg text-xs border border-indigo-200 hover:bg-indigo-100 disabled:opacity-50 cursor-pointer"
+               >
+                 {isParsing ? parseStatus : '📸 從相片/圖片/PDF 辨識並追加單字'}
+               </button>
+            </div>
+
             <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 mb-3 flex flex-col gap-2">
               <div className="flex gap-2">
                 <input type="text" placeholder="搜尋單字/備註..." value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setListPage(1); }} className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
@@ -766,8 +862,8 @@
                 </select>
               </div>
               <div className="flex gap-2">
-                <input type="text" value={customWordInput} onChange={(e) => setCustomWordInput(e.target.value)} placeholder="新增單字 (空白分隔)" className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
-                <button onClick={handleAddCustomWords} className="px-3 py-2 bg-gray-800 text-white font-bold rounded-lg text-xs hover:bg-gray-900 cursor-pointer">新增</button>
+                <input type="text" value={customWordInput} onChange={(e) => setCustomWordInput(e.target.value)} placeholder="手動打字新增 (可多個單字空白分隔)" className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
+                <button onClick={handleAddCustomWords} className="px-3 py-2 bg-gray-800 text-white font-bold rounded-lg text-xs hover:bg-gray-900 cursor-pointer">手動追加</button>
               </div>
             </div>
 
@@ -928,4 +1024,5 @@
   </script>
 </body>
 </html>
+
 
