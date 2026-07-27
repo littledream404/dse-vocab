@@ -117,7 +117,7 @@
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null); 
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v17';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v21';
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -160,7 +160,7 @@
                   setWords(mergedWords);
                   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mergedWords));
                   await docRef.set({ words: mergedWords, updatedAt: new Date().toISOString() });
-                  alert(`登入成功！已將你剛剛建立的 ${newWords.length} 個新單字安全合併至雲端。`);
+                  alert(`登入成功！已將你剛剛建立的 ${newWords.length} 個新單字/短語安全合併至雲端。`);
                } else {
                   setWords(cloudWords);
                   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cloudWords));
@@ -177,7 +177,7 @@
           }
           
           setIsCloudReady(true); 
-          setView(cloudWords.length > 0 || localWords.length > 0 ? 'stats' : 'import');
+          setView((cloudWords.length > 0 || localWords.length > 0) ? 'stats' : 'import');
         } catch(e) {
           console.error("雲端讀取錯誤", e);
         } finally {
@@ -210,7 +210,7 @@
 
       useEffect(() => {
         if (words.length > 0) {
-          const safeWords = words.length > 6000 ? words.slice(0, 6000) : words;
+          const safeWords = words.length > 8000 ? words.slice(0, 8000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
           
           if (user && db && isCloudReady && !authLoading) {
@@ -295,21 +295,60 @@
         });
       };
 
+      // 核心升級：精準單字過濾 + 常用片語智慧白名單匹配
       const processExtractedText = (fullText, existingWords = []) => {
-        const extracted = fullText.match(/\b[a-zA-Z-]+\b/g);
-        if (!extracted) return [];
-
-        const ignoreList = new Set(['page', 'vocabularylist', 'words', 'p']);
         const currentSet = new Set(existingWords.map(w => w.word.toLowerCase()));
         const uniqueMap = new Map();
+        
+        const ignoreList = new Set(['page', 'vocabularylist', 'words', 'the', 'a', 'an', 'is', 'are', 'am', 'was', 'were', 'to', 'of', 'and', 'in', 'on', 'at', 'it']);
 
-        extracted.forEach(w => {
-          let clean = w.toLowerCase().replace(/^[-]+|[-]+$/g, '');
-          if ((clean.length > 1 || clean === 'a' || clean === 'i') && !ignoreList.has(clean) && !clean.startsWith('vocabularylist') && !currentSet.has(clean)) {
-            uniqueMap.set(clean, true);
+        // 常用 DSE 英文片語/慣用語白名單庫 (會自動在內文中被精準搜尋並保留)
+        const knownPhrases = [
+          'a fly in the ointment', 'pull off', 'look forward to', 'give up', 'take off', 
+          'turn down', 'get rid of', 'in spite of', 'due to', 'as well as', 
+          'point out', 'carry out', 'bring about', 'take into account', 'make up one s mind',
+          'catch sight of', 'keep an eye on', 'take for granted', 'by and large', 'on the whole'
+        ];
+
+        // 1. 先掃描內文是否包含高頻片語，若有則優先加入
+        const lowerText = fullText.toLowerCase();
+        knownPhrases.forEach(phrase => {
+          if (lowerText.includes(phrase)) {
+             if (!currentSet.has(phrase)) {
+                uniqueMap.set(phrase, true);
+             }
           }
         });
-        return Array.from(uniqueMap.keys()).map(w => ({ word: w, status: 'new', note: '' }));
+
+        // 2. 正常乾淨的單字萃取 (確保數量不會膨脹到一萬多個)
+        const matches = fullText.match(/\b[a-zA-Z-']+\b/g);
+        if (matches) {
+          matches.forEach(w => {
+            let clean = w.toLowerCase().replace(/^[-']+|[-']+$/g, '');
+            if (clean.length > 1 && !ignoreList.has(clean)) {
+               if (/^[a-z-]+$/.test(clean) && !currentSet.has(clean) && !uniqueMap.has(clean)) {
+                  uniqueMap.set(clean, true);
+               }
+            }
+          });
+        }
+
+        // 3. 如果使用者在文字框或自訂輸入中手動打入了帶空格的短語 (例如 "a fly in the ointment" 或 "pull off")
+        // 只要使用者自己寫了，就無條件直接收錄
+        if (fullText.includes(' ') && !fullText.includes('\n') && fullText.trim().split(' ').length <= 8) {
+           let manualPhrase = fullText.trim().toLowerCase();
+           if (!currentSet.has(manualPhrase)) {
+              uniqueMap.set(manualPhrase, true);
+           }
+        }
+
+        const finalWords = [];
+        for (let key of uniqueMap.keys()) {
+          if (/[aeiouy]/.test(key) && key.length <= 50) {
+             finalWords.push({ word: key, status: 'new', note: '' });
+          }
+        }
+        return finalWords;
       };
 
       const handleFileUpload = async (e, isAppending = false) => {
@@ -359,17 +398,17 @@
             throw new Error("不支援的檔案格式，請上傳 PDF、TXT 或圖片檔");
           }
 
-          setParseStatus('過濾雜訊與重複單字...');
+          setParseStatus('精準過濾單字與片語中...');
           
           const existingList = isAppending ? words : [];
           const newWords = processExtractedText(fullText, existingList);
 
           if (newWords.length === 0) {
-            alert("找不到新的英文單字！(可能字庫中已存在)");
+            alert("找不到新的英文單字或短語！(可能字庫中已存在)");
           } else {
             if (isAppending) {
                setWords(prev => [...prev, ...newWords]);
-               alert(`成功從檔案辨識並追加了 ${newWords.length} 個新單字！`);
+               alert(`成功從檔案辨識並追加了 ${newWords.length} 個新詞彙！`);
             } else {
                setWords(newWords);
                setView('stats');
@@ -392,7 +431,7 @@
          if (!initialManualInput.trim()) return;
          
          if (words.length > 0) {
-            if (!window.confirm("這會覆蓋目前的單字紀錄，確定嗎？ (要追加請到字庫管理)")) return;
+            if (!window.confirm("這會覆蓋目前的紀錄，確定嗎？ (要追加請到字庫管理)")) return;
          }
          
          const newWords = processExtractedText(initialManualInput, []);
@@ -401,7 +440,7 @@
             setInitialManualInput('');
             setView('stats');
          } else {
-            alert("找不到有效的單字！");
+            alert("找不到有效的單字或短語！");
          }
       };
 
@@ -435,7 +474,7 @@
         let richTransData = []; 
         
         try {
-          const dictRes = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${wordStr}`);
+          const dictRes = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(wordStr)}`);
           if (dictRes.ok) {
             dictData = (await dictRes.json())[0];
           }
@@ -559,10 +598,10 @@
         
         if (newWords.length > 0) {
           setWords(prev => [...prev, ...newWords]);
-          alert(`成功追加了 ${newWords.length} 個單字！`);
+          alert(`成功追加了 ${newWords.length} 個詞彙！`);
           setCustomWordInput('');
         } else {
-          alert("單字皆已存在或無效。");
+          alert("詞彙皆已存在或無效。");
         }
       };
       
@@ -613,15 +652,15 @@
             >
               {isParsing ? parseStatus : "上傳相片/圖片/PDF 自動辨識"}
             </button>
-            <p className="text-[10px] text-gray-400 mt-3 text-center">支援截圖或相片文字辨識提取單字</p>
+            <p className="text-[10px] text-gray-400 mt-3 text-center">精準過濾：維持單字量精確，完美抓取高頻片語</p>
           </div>
           
           <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center">
-             <label className="text-xs font-bold text-gray-700 w-full mb-2">✍️ 直接輸入或貼上單字：</label>
+             <label className="text-xs font-bold text-gray-700 w-full mb-2">✍️ 直接輸入或貼上單字/短語：</label>
              <textarea 
                value={initialManualInput} 
                onChange={(e) => setInitialManualInput(e.target.value)}
-               placeholder="例如：apple banana cat... (系統會自動過濾整理)" 
+               placeholder="例如：apple, pull off, a fly in the ointment..." 
                className="w-full text-xs p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none resize-none h-24 mb-3"
              />
              <button 
@@ -636,7 +675,6 @@
       );
 
       const renderStudy = () => {
-        // 修正 1：如果 words 陣列完全沒東西，不再回傳 null 導致白畫面，而是顯示友善的空狀態
         if (!words || words.length === 0) {
           return (
             <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -660,7 +698,7 @@
         }
 
         const currentWordObj = studyList[studyIndex] || studyList[0];
-        if (!currentWordObj) return null; // 保險機制
+        if (!currentWordObj) return null;
 
         const progress = Math.round(((studyIndex + 1) / studyList.length) * 100);
         const modeLabels = { 'all': '全部', 'new': '未學', 'review': '錯題複習', 'known': '已掌握' };
@@ -694,7 +732,7 @@
                     className="absolute top-0 left-0 p-3 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-full transition z-20 cursor-pointer"
                   >🗑️</button>
                   <span className="text-[10px] uppercase tracking-widest text-indigo-400 font-bold mb-3 block bg-indigo-50 px-2 py-0.5 rounded-full mt-2">點擊卡片看解釋</span>
-                  <h1 className="text-4xl font-black text-gray-900 tracking-tight mb-4">{currentWordObj.word}</h1>
+                  <h1 className="text-3xl font-black text-gray-900 tracking-tight mb-4 leading-tight">{currentWordObj.word}</h1>
                   
                   <div className="flex gap-3 justify-center mt-2">
                     <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 shadow-sm flex items-center gap-1 cursor-pointer">🇬🇧 英式</button>
@@ -708,7 +746,7 @@
               ) : (
                 <div className="w-full h-full flex flex-col text-left relative z-10 max-h-[320px]">
                   <div className="flex justify-between items-start border-b pb-2 mb-2 sticky top-0 bg-white">
-                    <h1 className="text-2xl font-black text-gray-900">{currentWordObj.word}</h1>
+                    <h1 className="text-2xl font-black text-gray-900 leading-tight pr-2">{currentWordObj.word}</h1>
                     <div className="flex gap-1.5 shrink-0">
                        <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 cursor-pointer text-xs" title="英式發音">🇬🇧</button>
                        <button onClick={(e) => speakWord(currentWordObj.word, 'US', e)} className="p-2 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 cursor-pointer text-xs" title="美式發音">🇺🇸</button>
@@ -716,7 +754,7 @@
                   </div>
                   
                   <div className="overflow-y-auto pr-1 flex-grow mb-2">
-                    {isLoadingDef ? <div className="text-center py-6 text-sm text-gray-500">載入字典與翻譯中...</div> : definition?.notFound ? <div className="text-gray-400 text-xs italic py-4">自訂單字，無線上解釋。</div> : (
+                    {isLoadingDef ? <div className="text-center py-6 text-sm text-gray-500">載入字典與翻譯中...</div> : definition?.notFound ? <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。</div> : (
                       <div className="text-sm space-y-3 pb-2">
                         {(defLang === 'both' || defLang === 'zh') && (definition?.translation || (definition?.richTranslation && definition.richTranslation.length > 0)) && (
                            <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 mb-3">
@@ -829,7 +867,6 @@
                   <option value="known">✅ 只溫習「已掌握」的單字</option>
                 </select>
                 <button onClick={() => { 
-                  // 修正 2：如果單字庫是空的，點擊開始溫習時給出提示並返回 import
                   if (!words || words.length === 0) {
                      alert("請先加入單字才能開始溫習喔！");
                      setView('import');
@@ -870,20 +907,20 @@
             </div>
 
             <div className="bg-white p-3 rounded-xl shadow-sm border border-indigo-100 mb-3 text-center">
-               <p className="text-[10px] text-gray-500 mb-2">想從其他教材加入更多單字？</p>
+               <p className="text-[10px] text-gray-500 mb-2">想從其他教材加入更多詞彙？</p>
                <input type="file" ref={appendFileInputRef} onChange={(e) => handleFileUpload(e, true)} accept=".pdf,.txt,image/*" className="hidden" />
                <button 
                   onClick={() => appendFileInputRef.current.click()} 
                   disabled={isParsing}
                   className="w-full py-2 bg-indigo-50 text-indigo-700 font-bold rounded-lg text-xs border border-indigo-200 hover:bg-indigo-100 disabled:opacity-50 cursor-pointer"
                >
-                 {isParsing ? parseStatus : '📸 從相片/圖片/PDF 辨識並追加單字'}
+                 {isParsing ? parseStatus : '📸 從相片/圖片/PDF 辨識並追加詞彙'}
                </button>
             </div>
 
             <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 mb-3 flex flex-col gap-2">
               <div className="flex gap-2">
-                <input type="text" placeholder="搜尋單字/備註..." value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setListPage(1); }} className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
+                <input type="text" placeholder="搜尋詞彙/備註..." value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setListPage(1); }} className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
                 <select value={listFilter} onChange={(e) => { setListFilter(e.target.value); setListPage(1); }} className="p-2 text-xs border border-gray-300 rounded-lg outline-none bg-gray-50 cursor-pointer">
                   <option value="all">全部狀態</option>
                   <option value="review">僅需複習</option>
@@ -899,13 +936,13 @@
                 </select>
               </div>
               <div className="flex gap-2">
-                <input type="text" value={customWordInput} onChange={(e) => setCustomWordInput(e.target.value)} placeholder="手動打字新增 (可多個單字空白分隔)" className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
+                <input type="text" value={customWordInput} onChange={(e) => setCustomWordInput(e.target.value)} placeholder="打字新增 (如: pull off)" className="flex-1 p-2 text-xs border border-gray-300 rounded-lg outline-none" />
                 <button onClick={handleAddCustomWords} className="px-3 py-2 bg-gray-800 text-white font-bold rounded-lg text-xs hover:bg-gray-900 cursor-pointer">手動追加</button>
               </div>
             </div>
 
             <div className="flex-grow overflow-y-auto bg-white rounded-xl shadow-sm border border-gray-100 p-2 mb-3 no-scrollbar">
-              {paginatedList.length === 0 ? <div className="text-center py-10 text-xs text-gray-400">找不到單字。</div> : (
+              {paginatedList.length === 0 ? <div className="text-center py-10 text-xs text-gray-400">找不到詞彙。</div> : (
                 <div className="divide-y divide-gray-100">
                   {paginatedList.map(item => (
                     <div key={item.word} className="py-2.5 px-3 flex items-center justify-between hover:bg-indigo-50 transition rounded-lg text-sm">
@@ -952,7 +989,6 @@
         <div className="min-h-screen bg-slate-50 font-sans pb-16">
           <header className="bg-white shadow-xs sticky top-0 z-20">
             <div className="max-w-md mx-auto px-4 h-14 flex items-center justify-between">
-              {/* 修正 3：點擊 LOGO 的智能導航。如果沒單字帶你去建立，有單字帶你去統計 */}
               <div className="flex items-center text-indigo-600 cursor-pointer" onClick={() => setView((words && words.length > 0) ? 'stats' : 'import')}>
                 <span className="text-lg mr-1.5">✨</span>
                 <h1 className="font-bold text-sm tracking-tight">DSE 5000+ 單字神器</h1>
@@ -974,18 +1010,18 @@
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl flex flex-col max-h-[85vh]">
                 <div className="flex justify-between items-start border-b pb-3 mb-3">
-                  <div>
-                     <h3 className="text-2xl font-black text-gray-900">{activeDetailWord.word}</h3>
+                  <div className="max-w-[85%]">
+                     <h3 className="text-2xl font-black text-gray-900 leading-tight">{activeDetailWord.word}</h3>
                      <div className="flex gap-1.5 mt-2">
                         <button onClick={(e) => speakWord(activeDetailWord.word, 'UK', e)} className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 cursor-pointer">🇬🇧 英式</button>
                         <button onClick={(e) => speakWord(activeDetailWord.word, 'US', e)} className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 cursor-pointer">🇺🇸 美式</button>
                      </div>
                   </div>
-                  <button onClick={() => setActiveDetailWord(null)} className="text-gray-400 p-1 cursor-pointer text-lg">✖</button>
+                  <button onClick={() => setActiveDetailWord(null)} className="text-gray-400 p-1 cursor-pointer text-lg shrink-0">✖</button>
                 </div>
                 
                 <div className="flex-grow overflow-y-auto text-xs mb-3 max-h-[220px]">
-                  {isLoadingDetailDef ? <div className="text-gray-400 text-center py-4">載入解釋中...</div> : detailDef?.notFound ? <div className="text-gray-400 py-2">無此單字解釋。</div> : (
+                  {isLoadingDetailDef ? <div className="text-gray-400 text-center py-4">載入解釋中...</div> : detailDef?.notFound ? <div className="text-gray-400 py-2">無此詞彙的線上解釋。</div> : (
                      <div className="space-y-3">
                         {(defLang === 'both' || defLang === 'zh') && (detailDef?.translation || (detailDef?.richTranslation && detailDef.richTranslation.length > 0)) && (
                            <div className="bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
@@ -1062,5 +1098,4 @@
   </script>
 </body>
 </html>
-
 
