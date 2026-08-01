@@ -117,7 +117,7 @@
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null); 
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v21';
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v22';
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -295,14 +295,12 @@
         });
       };
 
-      // 核心升級：精準單字過濾 + 常用片語智慧白名單匹配
       const processExtractedText = (fullText, existingWords = []) => {
         const currentSet = new Set(existingWords.map(w => w.word.toLowerCase()));
         const uniqueMap = new Map();
         
         const ignoreList = new Set(['page', 'vocabularylist', 'words', 'the', 'a', 'an', 'is', 'are', 'am', 'was', 'were', 'to', 'of', 'and', 'in', 'on', 'at', 'it']);
 
-        // 常用 DSE 英文片語/慣用語白名單庫 (會自動在內文中被精準搜尋並保留)
         const knownPhrases = [
           'a fly in the ointment', 'pull off', 'look forward to', 'give up', 'take off', 
           'turn down', 'get rid of', 'in spite of', 'due to', 'as well as', 
@@ -310,7 +308,6 @@
           'catch sight of', 'keep an eye on', 'take for granted', 'by and large', 'on the whole'
         ];
 
-        // 1. 先掃描內文是否包含高頻片語，若有則優先加入
         const lowerText = fullText.toLowerCase();
         knownPhrases.forEach(phrase => {
           if (lowerText.includes(phrase)) {
@@ -320,7 +317,6 @@
           }
         });
 
-        // 2. 正常乾淨的單字萃取 (確保數量不會膨脹到一萬多個)
         const matches = fullText.match(/\b[a-zA-Z-']+\b/g);
         if (matches) {
           matches.forEach(w => {
@@ -333,8 +329,6 @@
           });
         }
 
-        // 3. 如果使用者在文字框或自訂輸入中手動打入了帶空格的短語 (例如 "a fly in the ointment" 或 "pull off")
-        // 只要使用者自己寫了，就無條件直接收錄
         if (fullText.includes(' ') && !fullText.includes('\n') && fullText.trim().split(' ').length <= 8) {
            let manualPhrase = fullText.trim().toLowerCase();
            if (!currentSet.has(manualPhrase)) {
@@ -468,20 +462,44 @@
         }
       };
 
+      // 核心升級：離線快取機制與防逾時保護
       const fetchDefinitionApi = async (wordStr) => {
+        const cacheKey = `dse_dict_cache_${wordStr.toLowerCase()}`;
+        
+        // 1. 先從本機快取尋找 (即使沒網路也能秒開)
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          try {
+             return JSON.parse(cached);
+          } catch(e) {}
+        }
+        
+        // 2. 如果沒快取，且手機目前顯示離線，直接回傳離線狀態
+        if (!navigator.onLine) {
+           return { error: true, offline: true };
+        }
+
         let dictData = null;
         let transData = null;
         let richTransData = []; 
         
+        const controller = new AbortController();
+        // 設定 8 秒強制逾時，避免畫面永遠卡住
+        const timeoutId = setTimeout(() => controller.abort(), 8000); 
+
         try {
-          const dictRes = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(wordStr)}`);
-          if (dictRes.ok) {
-            dictData = (await dictRes.json())[0];
+          // 3. 並行發送請求：讓字典和翻譯同時抓取，加快速度
+          const [dictRes, transRes] = await Promise.allSettled([
+             fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(wordStr)}`, { signal: controller.signal }),
+             fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(wordStr)}`, { signal: controller.signal })
+          ]);
+
+          if (dictRes.status === 'fulfilled' && dictRes.value.ok) {
+            dictData = (await dictRes.value.json())[0];
           }
           
-          const transRes = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(wordStr)}`);
-          if (transRes.ok) {
-            const transJson = await transRes.json();
+          if (transRes.status === 'fulfilled' && transRes.value.ok) {
+            const transJson = await transRes.value.json();
             if (transJson && transJson[0] && transJson[0][0] && transJson[0][0][0]) {
                transData = transJson[0][0][0];
             }
@@ -500,11 +518,32 @@
                });
             }
           }
+          
+          clearTimeout(timeoutId);
+
+          if (!dictData && !transData && richTransData.length === 0) {
+             // 如果兩邊都找不到，依然快取下來，避免下次又浪費時間查
+             const emptyResult = { notFound: true };
+             try { localStorage.setItem(cacheKey, JSON.stringify(emptyResult)); } catch(e){}
+             return emptyResult;
+          }
+          
+          const finalResult = { dict: dictData, translation: transData, richTranslation: richTransData };
+          
+          // 4. 寫入快取，讓下次看時可以直接離線打開
+          try {
+             localStorage.setItem(cacheKey, JSON.stringify(finalResult));
+          } catch(e) {
+             // 忽略快取爆滿錯誤
+             console.warn("Local storage cache full.");
+          }
+
+          return finalResult;
         } catch (e) {
+           clearTimeout(timeoutId);
            console.error("API Fetch Error", e);
+           return { error: true, offline: !navigator.onLine };
         }
-        
-        return { dict: dictData, translation: transData, richTranslation: richTransData };
       };
 
       const fetchDefinitionForCard = async (wordStr) => {
@@ -584,6 +623,10 @@
       const executeClearAll = () => {
         setWords([]);
         localStorage.removeItem(LOCAL_STORAGE_KEY);
+        // 清除所有字典快取
+        Object.keys(localStorage).forEach(key => {
+           if (key.startsWith('dse_dict_cache_')) localStorage.removeItem(key);
+        });
         if (user && db) {
           db.collection('users').doc(user.uid).delete();
         }
@@ -754,7 +797,21 @@
                   </div>
                   
                   <div className="overflow-y-auto pr-1 flex-grow mb-2">
-                    {isLoadingDef ? <div className="text-center py-6 text-sm text-gray-500">載入字典與翻譯中...</div> : definition?.notFound ? <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。</div> : (
+                    {isLoadingDef ? (
+                      <div className="flex flex-col items-center justify-center py-10 text-gray-400">
+                         <span className="animate-spin text-2xl mb-2">⏳</span>
+                         <span className="text-xs">努力載入解釋中...</span>
+                      </div>
+                    ) : definition?.error ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-red-400 bg-red-50/50 rounded-xl border border-red-100 mt-2">
+                         <span className="text-3xl mb-2">📡</span>
+                         <span className="text-xs font-bold text-red-500 mb-1">{definition.offline ? "目前處於離線狀態" : "網路連線微弱或逾時"}</span>
+                         <span className="text-[10px] text-red-400 mb-3 text-center">無法即時取得字典資料<br/>(之前已看過的單字支援離線檢視)</span>
+                         <button onClick={(e) => {e.stopPropagation(); fetchDefinitionForCard(currentWordObj.word);}} className="px-4 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold border border-red-200 shadow-sm cursor-pointer">🔄 重新嘗試</button>
+                      </div>
+                    ) : definition?.notFound ? (
+                      <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。</div>
+                    ) : (
                       <div className="text-sm space-y-3 pb-2">
                         {(defLang === 'both' || defLang === 'zh') && (definition?.translation || (definition?.richTranslation && definition.richTranslation.length > 0)) && (
                            <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 mb-3">
@@ -1021,7 +1078,21 @@
                 </div>
                 
                 <div className="flex-grow overflow-y-auto text-xs mb-3 max-h-[220px]">
-                  {isLoadingDetailDef ? <div className="text-gray-400 text-center py-4">載入解釋中...</div> : detailDef?.notFound ? <div className="text-gray-400 py-2">無此詞彙的線上解釋。</div> : (
+                  {isLoadingDetailDef ? (
+                      <div className="flex flex-col items-center justify-center py-10 text-gray-400">
+                         <span className="animate-spin text-2xl mb-2">⏳</span>
+                         <span className="text-xs">努力載入解釋中...</span>
+                      </div>
+                  ) : detailDef?.error ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-red-400 bg-red-50/50 rounded-xl border border-red-100 mt-2">
+                         <span className="text-3xl mb-2">📡</span>
+                         <span className="text-xs font-bold text-red-500 mb-1">{detailDef.offline ? "目前處於離線狀態" : "網路連線微弱或逾時"}</span>
+                         <span className="text-[10px] text-red-400 mb-3 text-center">無法即時取得字典資料<br/>(之前已看過的單字支援離線檢視)</span>
+                         <button onClick={(e) => {e.stopPropagation(); openWordDetail(activeDetailWord);}} className="px-4 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold border border-red-200 shadow-sm cursor-pointer">🔄 重新嘗試</button>
+                      </div>
+                  ) : detailDef?.notFound ? (
+                      <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。</div>
+                  ) : (
                      <div className="space-y-3">
                         {(defLang === 'both' || defLang === 'zh') && (detailDef?.translation || (detailDef?.richTranslation && detailDef.richTranslation.length > 0)) && (
                            <div className="bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
@@ -1098,4 +1169,5 @@
   </script>
 </body>
 </html>
+
 
