@@ -50,6 +50,35 @@
       console.log("Firebase 初始化失敗", e);
     }
 
+    // --- DSE 專屬片語內建辭典 ---
+    const DSE_PHRASE_DICT = {
+      'a fly in the ointment': { zh: '美中不足之處；掃興的事', en: 'A minor defect or problem that spoils something that is otherwise good.', pos: 'Idiom (成語)' },
+      'pull off': { zh: '成功完成（困難的事）；脫下', en: 'To succeed in doing something difficult or unexpected; to remove clothes.', pos: 'Phrasal Verb (片語動詞)' },
+      'look forward to': { zh: '期待；盼望', en: 'To feel pleased and excited about something that is going to happen.', pos: 'Phrasal Verb (片語動詞)' },
+      'give up': { zh: '放棄；戒除', en: 'To stop trying to do something; to stop doing or having something.', pos: 'Phrasal Verb (片語動詞)' },
+      'take off': { zh: '起飛；脫下；突然成功/大受歡迎', en: 'To leave the ground (airplane); to remove clothing; to suddenly become successful or popular.', pos: 'Phrasal Verb (片語動詞)' },
+      'turn down': { zh: '拒絕（提議或請求）；調低（音量等）', en: 'To refuse an offer or request; to reduce the volume or level of something.', pos: 'Phrasal Verb (片語動詞)' },
+      'get rid of': { zh: '擺脫；清除；丟棄', en: 'To remove or throw away something unwanted; to free oneself from something.', pos: 'Phrasal Verb (片語動詞)' },
+      'in spite of': { zh: '儘管；不顧', en: 'Without being affected by the particular factor mentioned.', pos: 'Phrase (片語)' },
+      'due to': { zh: '由於；因為', en: 'Caused by or ascribable to; because of.', pos: 'Phrase (片語)' },
+      'as well as': { zh: '以及；除...之外還', en: 'In addition to; and also.', pos: 'Phrase (片語)' },
+      'point out': { zh: '指出；提出', en: 'To direct attention to something; to explain or tell someone something.', pos: 'Phrasal Verb (片語動詞)' },
+      'carry out': { zh: '執行；落實；完成', en: 'To perform or complete a task or procedure.', pos: 'Phrasal Verb (片語動詞)' },
+      'bring about': { zh: '引起；導致', en: 'To cause something to happen.', pos: 'Phrasal Verb (片語動詞)' },
+      'take into account': { zh: '考慮到；顧及', en: 'To consider or remember something when judging a situation.', pos: 'Phrase (片語)' },
+      'make up one s mind': { zh: '下定決心；做決定', en: 'To make a final decision about something.', pos: 'Phrase (片語)' },
+      'catch sight of': { zh: '瞥見；看到', en: 'To suddenly see someone or something for a brief moment.', pos: 'Phrase (片語)' },
+      'keep an eye on': { zh: '留意；照看', en: 'To watch someone or something carefully; to look after.', pos: 'Phrase (片語)' },
+      'take for granted': { zh: '視為理所當然；不把...當回事', en: 'To fail to properly appreciate someone or something, often because they are very familiar.', pos: 'Phrase (片語)' },
+      'by and large': { zh: '大體上；總的來說', en: 'On the whole; everything considered.', pos: 'Phrase (片語)' },
+      'on the whole': { zh: '總的來說；大體上', en: 'Taking everything into account; in general.', pos: 'Phrase (片語)' },
+      'come up with': { zh: '想出；提出（主意或計劃）', en: 'To produce a new idea or plan.', pos: 'Phrasal Verb (片語動詞)' },
+      'look up to': { zh: '敬仰；欽佩', en: 'To admire and respect someone.', pos: 'Phrasal Verb (片語動詞)' },
+      'run out of': { zh: '用完；耗盡', en: 'To use all of something so that there is none left.', pos: 'Phrasal Verb (片語動詞)' },
+      'put up with': { zh: '忍受；容忍', en: 'To tolerate or endure something that is annoying or unpleasant.', pos: 'Phrasal Verb (片語動詞)' },
+      'catch up with': { zh: '趕上；追上', en: 'To reach the same quality or standard as someone or something else.', pos: 'Phrasal Verb (片語動詞)' }
+    };
+
     const { useState, useEffect, useRef, useMemo, Component } = React;
 
     class ErrorBoundary extends Component {
@@ -115,14 +144,16 @@
       const [isCloudReady, setIsCloudReady] = useState(false);
       const [defLang, setDefLang] = useState(localStorage.getItem('dse_vocab_lang') || 'both');
 
+      // 批次下載狀態
       const [isPreloading, setIsPreloading] = useState(false);
       const [preloadStats, setPreloadStats] = useState({ current: 0, total: 0 });
       const preloadRef = useRef(false);
+      // 防休眠鎖定器
+      const wakeLockRef = useRef(null);
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null); 
-      // 升級版本號，強制與舊版的亂碼資料隔離
       const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v28'; 
 
       const loadLocalData = () => {
@@ -301,45 +332,31 @@
         });
       };
 
-      // --- 修復核心：單字/片語精準拆解引擎 ---
       const processExtractedText = (fullText, existingWords = [], isManualInput = false) => {
         const currentSet = new Set(existingWords.map(w => w.word.toLowerCase()));
         const uniqueMap = new Map();
         
         const ignoreList = new Set(['page', 'vocabularylist', 'words', 'the', 'a', 'an', 'is', 'are', 'am', 'was', 'were', 'to', 'of', 'and', 'in', 'on', 'at', 'it']);
-
-        const knownPhrases = [
-            'a fly in the ointment', 'pull off', 'look forward to', 'give up', 'take off',
-            'turn down', 'get rid of', 'in spite of', 'due to', 'as well as',
-            'point out', 'carry out', 'bring about', 'take into account', 'make up one s mind',
-            'catch sight of', 'keep an eye on', 'take for granted', 'by and large', 'on the whole',
-            'come up with', 'look up to', 'run out of', 'put up with', 'catch up with'
-        ];
-
+        const knownPhrases = Object.keys(DSE_PHRASE_DICT);
         const lowerText = fullText.toLowerCase();
 
-        // 1. 如果是手動輸入，且內容不長 (無換行，小於 8 個字)，視為「一個完整片語/單字」！不亂拆！
         if (isManualInput && fullText.trim().length > 0 && !fullText.includes('\n') && fullText.trim().split(' ').length <= 8) {
             let manualPhrase = fullText.trim().toLowerCase();
             if (!currentSet.has(manualPhrase) && !ignoreList.has(manualPhrase)) {
                 uniqueMap.set(manualPhrase, true);
             }
         } else {
-            // 2. 如果是 PDF 或長文掃描：
-            // A. 先找出並保護已知的常用片語
             knownPhrases.forEach(phrase => {
                 if (lowerText.includes(phrase) && !currentSet.has(phrase)) {
                     uniqueMap.set(phrase, true);
                 }
             });
 
-            // B. 精準提取單字 (完全不亂拼接！)
             const matches = fullText.match(/\b[a-zA-Z-']+\b/g);
             if (matches) {
                 matches.forEach(w => {
                     let clean = w.toLowerCase().replace(/^[-']+|[-']+$/g, '').trim();
                     if (clean.length > 1 && !ignoreList.has(clean)) {
-                        // 確保它是一個正常的英文字 (只允許 a-z 和中間有連字符號)
                         if (/^[a-z]+(-[a-z]+)*$/.test(clean) && !currentSet.has(clean) && !uniqueMap.has(clean)) {
                             uniqueMap.set(clean, true);
                         }
@@ -407,7 +424,7 @@
           setParseStatus('精準過濾單字與片語中...');
           
           const existingList = isAppending ? words : [];
-          const newWords = processExtractedText(fullText, existingList, false); // false = 文件模式
+          const newWords = processExtractedText(fullText, existingList, false);
 
           if (newWords.length === 0) {
             alert("找不到新的英文單字或短語！(可能字庫中已存在)");
@@ -440,7 +457,6 @@
             if (!window.confirm("這會覆蓋目前的紀錄，確定嗎？ (要追加請到字庫管理)")) return;
          }
          
-         // 手動輸入模式開啟 (true)
          const newWords = processExtractedText(initialManualInput, [], true);
          if (newWords.length > 0) {
             setWords(newWords);
@@ -501,6 +517,11 @@
         if (wordObj && wordObj.customTrans) {
             currentData.translation = wordObj.customTrans;
             currentData.richTranslation = [{ pos: '自訂/片語', terms: wordObj.customTrans.split(/[,，；;]/).map(s => s.trim()) }];
+        } else if (DSE_PHRASE_DICT[lowerWord]) {
+            const phraseData = DSE_PHRASE_DICT[lowerWord];
+            currentData.translation = phraseData.zh;
+            currentData.richTranslation = [{ pos: phraseData.pos, terms: phraseData.zh.split('；') }];
+            currentData.dict = { meanings: [{ partOfSpeech: phraseData.pos, definitions: [{ definition: phraseData.en }] }] };
         }
 
         onUpdate(currentData);
@@ -584,6 +605,7 @@
         }
       };
 
+      // --- 核心升級：極速多線程並行下載與防休眠鎖定 ---
       const startPreload = async () => {
          const uncachedWords = words.filter(w => !localStorage.getItem(`dse_dict_cache_${w.word.toLowerCase()}`));
          if (uncachedWords.length === 0) {
@@ -591,77 +613,147 @@
              return;
          }
 
-         if (!window.confirm(`發現有 ${uncachedWords.length} 個單字尚未下載翻譯。\n為避免伺服器封鎖，系統將會進行慢速批次下載（期間可隨時暫停）。\n確定要開始嗎？`)) return;
+         if (!window.confirm(`發現有 ${uncachedWords.length} 個單字尚未下載翻譯。\n\n⚡ 本次升級開啟了「多線程極速下載」與「防止螢幕休眠」。\n⚠️ 請將手機放在此網頁，不要切換 App 以免被系統中斷。\n確定要開始嗎？`)) return;
 
          setIsPreloading(true);
          preloadRef.current = true;
          setPreloadStats({ current: 0, total: uncachedWords.length });
 
+         // 1. 啟用防螢幕休眠 (Wake Lock)
+         try {
+             if ('wakeLock' in navigator) {
+                 wakeLockRef.current = await navigator.wakeLock.request('screen');
+             }
+         } catch(err) {
+             console.log("Wake Lock 無法啟用:", err);
+         }
+
+         let currentIndex = 0;
          let successCount = 0;
+         let hasRateLimitError = false;
+         // 每個線程的基本等待間隔 (避免 Google 直接封鎖 IP)
+         let dynamicDelay = 250; 
 
-         for (let i = 0; i < uncachedWords.length; i++) {
-             if (!preloadRef.current) break; 
+         // 2. 定義單個 Worker 的任務邏輯
+         const worker = async () => {
+             while (currentIndex < uncachedWords.length && preloadRef.current && !hasRateLimitError) {
+                 const index = currentIndex;
+                 currentIndex++; // 取出工作後立刻將指針往下移 (重要：避免多線程重複抓同一個字)
 
-             const targetWord = uncachedWords[i];
-             const lowerStr = targetWord.word.toLowerCase();
-             const cacheKey = `dse_dict_cache_${lowerStr}`;
+                 if (index >= uncachedWords.length) break;
 
-             try {
-                 const [dictRes, transRes] = await Promise.allSettled([
-                     fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerStr)}`),
-                     fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerStr)}`)
-                 ]);
+                 const targetWord = uncachedWords[index];
+                 const lowerStr = targetWord.word.toLowerCase();
+                 const cacheKey = `dse_dict_cache_${lowerStr}`;
 
-                 let currentData = { dict: null, translation: null, richTranslation: [] };
-
-                 if (dictRes.status === 'fulfilled' && dictRes.value.ok) {
-                     const rawArr = await dictRes.value.json();
-                     currentData.dict = extractCompressedDict(rawArr);
-                 }
-
-                 if (transRes.status === 'fulfilled' && transRes.value.ok) {
-                     const transJson = await transRes.value.json();
-                     if (transJson[0] && transJson[0][0] && transJson[0][0][0]) {
-                         currentData.translation = transJson[0][0][0];
-                     }
-                     if (transJson[1] && Array.isArray(transJson[1])) {
-                         const posMap = { 'noun':'名詞', 'verb':'動詞', 'adjective':'形容詞', 'adverb':'副詞', 'pronoun':'代名詞', 'preposition':'介詞', 'conjunction':'連接詞', 'interjection':'感嘆詞', 'abbreviation':'縮寫', 'prefix':'字首', 'suffix':'字尾' };
-                         currentData.richTranslation = transJson[1].map(item => ({
-                             pos: posMap[item[0]?.toLowerCase()] || item[0],
-                             terms: Array.isArray(item[1]) ? item[1] : []
-                         }));
-                     }
-                 }
-
-                 if (targetWord.customTrans) {
-                     currentData.translation = targetWord.customTrans;
-                     currentData.richTranslation = [{ pos: '自訂/片語', terms: targetWord.customTrans.split(/[,，；;]/).map(s => s.trim()) }];
+                 // 如果是內建片語，直接寫入秒殺
+                 if (DSE_PHRASE_DICT[lowerStr]) {
+                     const phraseData = DSE_PHRASE_DICT[lowerStr];
+                     const perfectData = {
+                         dict: { meanings: [{ partOfSpeech: phraseData.pos, definitions: [{ definition: phraseData.en }] }] },
+                         translation: phraseData.zh,
+                         richTranslation: [{ pos: phraseData.pos, terms: phraseData.zh.split('；') }]
+                     };
+                     try { localStorage.setItem(cacheKey, JSON.stringify(perfectData)); } catch(e){}
+                     successCount++;
+                     setPreloadStats({ current: successCount, total: uncachedWords.length });
+                     continue; 
                  }
 
                  try {
-                     localStorage.setItem(cacheKey, JSON.stringify(currentData));
-                 } catch (e) {}
+                     const [dictRes, transRes] = await Promise.allSettled([
+                         fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerStr)}`),
+                         fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerStr)}`)
+                     ]);
 
-                 successCount++;
-                 setPreloadStats({ current: successCount, total: uncachedWords.length });
+                     let currentData = { dict: null, translation: null, richTranslation: [] };
 
-             } catch (err) {}
+                     if (dictRes.status === 'fulfilled' && dictRes.value.ok) {
+                         const rawArr = await dictRes.value.json();
+                         currentData.dict = extractCompressedDict(rawArr);
+                     }
 
-             if (preloadRef.current) {
-                 await new Promise(r => setTimeout(r, 600));
+                     if (transRes.status === 'fulfilled' && transRes.value.ok) {
+                         const transJson = await transRes.value.json();
+                         if (transJson[0] && transJson[0][0] && transJson[0][0][0]) {
+                             currentData.translation = transJson[0][0][0];
+                         }
+                         if (transJson[1] && Array.isArray(transJson[1])) {
+                             const posMap = { 'noun':'名詞', 'verb':'動詞', 'adjective':'形容詞', 'adverb':'副詞', 'pronoun':'代名詞', 'preposition':'介詞', 'conjunction':'連接詞', 'interjection':'感嘆詞', 'abbreviation':'縮寫', 'prefix':'字首', 'suffix':'字尾' };
+                             currentData.richTranslation = transJson[1].map(item => ({
+                                 pos: posMap[item[0]?.toLowerCase()] || item[0],
+                                 terms: Array.isArray(item[1]) ? item[1] : []
+                             }));
+                         }
+                     } else if (transRes.status === 'fulfilled' && transRes.value.status === 429) {
+                         // 被限速了，停止所有 Worker
+                         hasRateLimitError = true;
+                         alert("Google 翻譯伺服器限制了極速請求頻率 (Too Many Requests)。已暫停下載，請休息幾分鐘後再繼續。");
+                         break;
+                     }
+
+                     if (targetWord.customTrans) {
+                         currentData.translation = targetWord.customTrans;
+                         currentData.richTranslation = [{ pos: '自訂/片語', terms: targetWord.customTrans.split(/[,，；;]/).map(s => s.trim()) }];
+                     }
+
+                     if (!currentData.dict && !currentData.translation && currentData.richTranslation.length === 0) {
+                          currentData.notFound = true;
+                     }
+
+                     try {
+                         localStorage.setItem(cacheKey, JSON.stringify(currentData));
+                     } catch (e) {
+                         if (e.name === 'QuotaExceededError' || e.code === 22) {
+                             hasRateLimitError = true; // 借用錯誤旗標停止所有 Worker
+                             alert("手機瀏覽器儲存空間已滿，無法再寫入更多單字。請先清理手機空間！");
+                             break;
+                         }
+                     }
+
+                     successCount++;
+                     setPreloadStats({ current: successCount, total: uncachedWords.length });
+
+                 } catch (err) {}
+
+                 // 在每個任務間加入短暫動態延遲，保護 API 不被永久封鎖
+                 if (preloadRef.current && !hasRateLimitError) {
+                     await new Promise(r => setTimeout(r, dynamicDelay));
+                 }
              }
+         };
+
+         // 3. 同時啟動 3 個平行處理線程 (Concurrency: 3)
+         const CONCURRENCY = 3;
+         const workers = [];
+         for (let i = 0; i < CONCURRENCY; i++) {
+             workers.push(worker());
          }
 
+         // 4. 等待所有線程跑完
+         await Promise.all(workers);
+
+         // 5. 收尾作業與釋放資源
          setIsPreloading(false);
          preloadRef.current = false;
-         if (successCount === uncachedWords.length && successCount > 0) {
-             alert("下載完成！所有的單字解釋已成功安全儲存至手機。");
+         
+         if (wakeLockRef.current !== null) {
+             wakeLockRef.current.release().catch(()=>{});
+             wakeLockRef.current = null;
+         }
+
+         if (successCount === uncachedWords.length && successCount > 0 && !hasRateLimitError) {
+             alert("✅ 下載完成！所有的單字解釋已成功安全儲存至手機。現在可以斷網背單字了！");
          }
       };
 
       const stopPreload = () => {
           preloadRef.current = false;
           setIsPreloading(false);
+          if (wakeLockRef.current !== null) {
+              wakeLockRef.current.release().catch(()=>{});
+              wakeLockRef.current = null;
+          }
       };
 
       const fetchDefinitionForCard = async (wordObj) => {
@@ -780,7 +872,6 @@
 
       const handleAddCustomWords = () => {
         if (!customWordInput.trim()) return;
-        // 手動追加時開啟 (true)
         const newWords = processExtractedText(customWordInput, words, true);
         
         if (newWords.length > 0) {
@@ -1044,25 +1135,26 @@
               <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
                 <label className="text-xs font-bold text-gray-700 block mb-2">📥 離線字庫批次下載：</label>
                 <p className="text-[10px] text-gray-500 mb-3 leading-relaxed">
-                  預先下載未看過單字的翻譯，搭車無網路也能秒開字卡。<br/>
-                  <span className="text-orange-500 font-bold">(內建智慧壓縮技術，5000字也不怕爆容量。為防伺服器封鎖，下載會自動限速)</span>
+                  預先下載翻譯，搭車無網路也能秒開字卡。<br/>
+                  <span className="text-orange-500 font-bold">(已啟用：極速多線程下載 & 防止螢幕休眠技術)</span>
                 </p>
                 {isPreloading ? (
-                  <div className="w-full bg-gray-50 p-3 rounded-lg border border-gray-200">
-                    <div className="flex justify-between items-center text-[10px] font-bold text-gray-600 mb-1">
-                       <span>安全下載中...</span>
+                  <div className="w-full bg-indigo-50 p-3 rounded-lg border border-indigo-200 shadow-sm relative overflow-hidden">
+                    <div className="flex justify-between items-center text-[10px] font-bold text-indigo-700 mb-2 relative z-10">
+                       <span className="flex items-center gap-1"><span className="animate-spin text-sm">⏳</span> 多線程極速下載中...</span>
                        <span>{preloadStats.current} / {preloadStats.total}</span>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-1.5 mb-3 overflow-hidden">
-                      <div className="bg-green-500 h-full transition-all duration-300" style={{ width: `${(preloadStats.current / preloadStats.total) * 100}%` }}></div>
+                    <div className="w-full bg-indigo-200 rounded-full h-2 mb-3 overflow-hidden relative z-10">
+                      <div className="bg-indigo-600 h-full transition-all duration-300" style={{ width: `${(preloadStats.current / preloadStats.total) * 100}%` }}></div>
                     </div>
-                    <button onClick={stopPreload} className="w-full py-2 bg-red-50 text-red-600 border border-red-200 font-bold rounded text-xs hover:bg-red-100 cursor-pointer">
+                    <div className="text-center text-[10px] text-indigo-500 font-bold mb-3 relative z-10 bg-white/50 py-1 rounded">⚠️ 系統已鎖定螢幕亮度防休眠，請保持在此畫面</div>
+                    <button onClick={stopPreload} className="w-full py-2 bg-red-50 text-red-600 border border-red-200 font-bold rounded-lg text-xs hover:bg-red-100 cursor-pointer relative z-10">
                        ⏸ 暫停下載
                     </button>
                   </div>
                 ) : (
                   <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm hover:bg-green-100 cursor-pointer flex items-center justify-center gap-2">
-                     <span>⚡ 開始自動下載全部翻譯</span>
+                     <span>⚡ 開始極速下載全部翻譯</span>
                   </button>
                 )}
               </div>
@@ -1352,3 +1444,5 @@
   </script>
 </body>
 </html>
+
+
