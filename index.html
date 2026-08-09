@@ -102,6 +102,7 @@
       const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
       const [activeDetailWord, setActiveDetailWord] = useState(null);
       const [detailNoteInput, setDetailNoteInput] = useState('');
+      const [detailCustomTrans, setDetailCustomTrans] = useState('');
       
       const [detailDef, setDetailDef] = useState(null);
       const [isLoadingDetailDef, setIsLoadingDetailDef] = useState(false);
@@ -114,10 +115,15 @@
       const [isCloudReady, setIsCloudReady] = useState(false);
       const [defLang, setDefLang] = useState(localStorage.getItem('dse_vocab_lang') || 'both');
 
+      const [isPreloading, setIsPreloading] = useState(false);
+      const [preloadStats, setPreloadStats] = useState({ current: 0, total: 0 });
+      const preloadRef = useRef(false);
+
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null); 
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v22';
+      // 升級版本號，強制與舊版的亂碼資料隔離
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v28'; 
 
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -277,7 +283,7 @@
 
       useEffect(() => {
         if (studyList.length > 0 && studyIndex >= studyList.length) {
-          setStudyIndex(Math.max(0, studyList.length - 1));
+          setStudyIndex(0);
         }
       }, [studyList.length, studyIndex]);
 
@@ -295,51 +301,57 @@
         });
       };
 
-      const processExtractedText = (fullText, existingWords = []) => {
+      // --- 修復核心：單字/片語精準拆解引擎 ---
+      const processExtractedText = (fullText, existingWords = [], isManualInput = false) => {
         const currentSet = new Set(existingWords.map(w => w.word.toLowerCase()));
         const uniqueMap = new Map();
         
         const ignoreList = new Set(['page', 'vocabularylist', 'words', 'the', 'a', 'an', 'is', 'are', 'am', 'was', 'were', 'to', 'of', 'and', 'in', 'on', 'at', 'it']);
 
         const knownPhrases = [
-          'a fly in the ointment', 'pull off', 'look forward to', 'give up', 'take off', 
-          'turn down', 'get rid of', 'in spite of', 'due to', 'as well as', 
-          'point out', 'carry out', 'bring about', 'take into account', 'make up one s mind',
-          'catch sight of', 'keep an eye on', 'take for granted', 'by and large', 'on the whole'
+            'a fly in the ointment', 'pull off', 'look forward to', 'give up', 'take off',
+            'turn down', 'get rid of', 'in spite of', 'due to', 'as well as',
+            'point out', 'carry out', 'bring about', 'take into account', 'make up one s mind',
+            'catch sight of', 'keep an eye on', 'take for granted', 'by and large', 'on the whole',
+            'come up with', 'look up to', 'run out of', 'put up with', 'catch up with'
         ];
 
         const lowerText = fullText.toLowerCase();
-        knownPhrases.forEach(phrase => {
-          if (lowerText.includes(phrase)) {
-             if (!currentSet.has(phrase)) {
-                uniqueMap.set(phrase, true);
-             }
-          }
-        });
 
-        const matches = fullText.match(/\b[a-zA-Z-']+\b/g);
-        if (matches) {
-          matches.forEach(w => {
-            let clean = w.toLowerCase().replace(/^[-']+|[-']+$/g, '');
-            if (clean.length > 1 && !ignoreList.has(clean)) {
-               if (/^[a-z-]+$/.test(clean) && !currentSet.has(clean) && !uniqueMap.has(clean)) {
-                  uniqueMap.set(clean, true);
-               }
+        // 1. 如果是手動輸入，且內容不長 (無換行，小於 8 個字)，視為「一個完整片語/單字」！不亂拆！
+        if (isManualInput && fullText.trim().length > 0 && !fullText.includes('\n') && fullText.trim().split(' ').length <= 8) {
+            let manualPhrase = fullText.trim().toLowerCase();
+            if (!currentSet.has(manualPhrase) && !ignoreList.has(manualPhrase)) {
+                uniqueMap.set(manualPhrase, true);
             }
-          });
-        }
+        } else {
+            // 2. 如果是 PDF 或長文掃描：
+            // A. 先找出並保護已知的常用片語
+            knownPhrases.forEach(phrase => {
+                if (lowerText.includes(phrase) && !currentSet.has(phrase)) {
+                    uniqueMap.set(phrase, true);
+                }
+            });
 
-        if (fullText.includes(' ') && !fullText.includes('\n') && fullText.trim().split(' ').length <= 8) {
-           let manualPhrase = fullText.trim().toLowerCase();
-           if (!currentSet.has(manualPhrase)) {
-              uniqueMap.set(manualPhrase, true);
-           }
+            // B. 精準提取單字 (完全不亂拼接！)
+            const matches = fullText.match(/\b[a-zA-Z-']+\b/g);
+            if (matches) {
+                matches.forEach(w => {
+                    let clean = w.toLowerCase().replace(/^[-']+|[-']+$/g, '').trim();
+                    if (clean.length > 1 && !ignoreList.has(clean)) {
+                        // 確保它是一個正常的英文字 (只允許 a-z 和中間有連字符號)
+                        if (/^[a-z]+(-[a-z]+)*$/.test(clean) && !currentSet.has(clean) && !uniqueMap.has(clean)) {
+                            uniqueMap.set(clean, true);
+                        }
+                    }
+                });
+            }
         }
 
         const finalWords = [];
         for (let key of uniqueMap.keys()) {
-          if (/[aeiouy]/.test(key) && key.length <= 50) {
-             finalWords.push({ word: key, status: 'new', note: '' });
+          if (/[aeiouy]/.test(key) && key.length <= 60) {
+             finalWords.push({ word: key, status: 'new', note: '', customTrans: '' });
           }
         }
         return finalWords;
@@ -395,7 +407,7 @@
           setParseStatus('精準過濾單字與片語中...');
           
           const existingList = isAppending ? words : [];
-          const newWords = processExtractedText(fullText, existingList);
+          const newWords = processExtractedText(fullText, existingList, false); // false = 文件模式
 
           if (newWords.length === 0) {
             alert("找不到新的英文單字或短語！(可能字庫中已存在)");
@@ -428,7 +440,8 @@
             if (!window.confirm("這會覆蓋目前的紀錄，確定嗎？ (要追加請到字庫管理)")) return;
          }
          
-         const newWords = processExtractedText(initialManualInput, []);
+         // 手動輸入模式開啟 (true)
+         const newWords = processExtractedText(initialManualInput, [], true);
          if (newWords.length > 0) {
             setWords(newWords);
             setInitialManualInput('');
@@ -462,120 +475,241 @@
         }
       };
 
-      // 核心升級：離線快取機制與防逾時保護
-      const fetchDefinitionApi = async (wordStr) => {
-        const cacheKey = `dse_dict_cache_${wordStr.toLowerCase()}`;
+      const extractCompressedDict = (rawArr) => {
+         if (!rawArr || !rawArr[0]) return null;
+         const raw = rawArr[0];
+         return {
+             phonetic: raw.phonetic || raw.phonetics?.[0]?.text || '',
+             meanings: (raw.meanings || []).map(m => ({
+                 partOfSpeech: m.partOfSpeech,
+                 definitions: (m.definitions || []).slice(0, 2).map(d => ({ definition: d.definition }))
+             }))
+         };
+      };
+
+      const fetchWordData = async (wordStr, wordObj, onUpdate) => {
+        const lowerWord = wordStr.toLowerCase();
+        const cacheKey = `dse_dict_cache_${lowerWord}`;
         
-        // 1. 先從本機快取尋找 (即使沒網路也能秒開)
+        let currentData = { dict: null, translation: null, richTranslation: [] };
+        
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
-          try {
-             return JSON.parse(cached);
-          } catch(e) {}
+            try { currentData = JSON.parse(cached); } catch(e) {}
         }
-        
-        // 2. 如果沒快取，且手機目前顯示離線，直接回傳離線狀態
+
+        if (wordObj && wordObj.customTrans) {
+            currentData.translation = wordObj.customTrans;
+            currentData.richTranslation = [{ pos: '自訂/片語', terms: wordObj.customTrans.split(/[,，；;]/).map(s => s.trim()) }];
+        }
+
+        onUpdate(currentData);
+        if (currentData.dict && (currentData.translation || currentData?.richTranslation?.length > 0)) {
+            return; 
+        }
+
         if (!navigator.onLine) {
-           return { error: true, offline: true };
+            const hasAnyData = currentData.dict || currentData.translation || currentData.richTranslation?.length > 0;
+            onUpdate({ ...currentData, error: !hasAnyData, offline: true });
+            return;
         }
 
-        let dictData = null;
-        let transData = null;
-        let richTransData = []; 
-        
+        delete currentData.error;
+        delete currentData.offline;
+        delete currentData.notFound;
+
         const controller = new AbortController();
-        // 設定 8 秒強制逾時，避免畫面永遠卡住
-        const timeoutId = setTimeout(() => controller.abort(), 8000); 
+        const timeoutId = setTimeout(() => controller.abort(), 12000); 
 
-        try {
-          // 3. 並行發送請求：讓字典和翻譯同時抓取，加快速度
-          const [dictRes, transRes] = await Promise.allSettled([
-             fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(wordStr)}`, { signal: controller.signal }),
-             fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(wordStr)}`, { signal: controller.signal })
-          ]);
+        const fetchEng = (async () => {
+            try {
+                let res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerWord)}`, { signal: controller.signal });
+                if (res.ok) {
+                    let data = await res.json();
+                    if (data && Array.isArray(data) && data[0]) {
+                        currentData.dict = extractCompressedDict(data);
+                        onUpdate({ ...currentData });
+                        return;
+                    }
+                }
+                const parts = lowerWord.split(/\s+/);
+                if (parts.length > 1) {
+                    let subRes = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(parts[0])}`, { signal: controller.signal });
+                    if (subRes.ok) {
+                        let subData = await subRes.json();
+                        if (subData && Array.isArray(subData) && subData[0]) {
+                            currentData.dict = extractCompressedDict(subData);
+                            onUpdate({ ...currentData });
+                        }
+                    }
+                }
+            } catch(e) {}
+        })();
 
-          if (dictRes.status === 'fulfilled' && dictRes.value.ok) {
-            dictData = (await dictRes.value.json())[0];
-          }
-          
-          if (transRes.status === 'fulfilled' && transRes.value.ok) {
-            const transJson = await transRes.value.json();
-            if (transJson && transJson[0] && transJson[0][0] && transJson[0][0][0]) {
-               transData = transJson[0][0][0];
-            }
-            if (transJson && transJson[1] && Array.isArray(transJson[1])) {
-               const posMap = {
-                 'noun': '名詞', 'verb': '動詞', 'adjective': '形容詞', 'adverb': '副詞',
-                 'pronoun': '代名詞', 'preposition': '介詞', 'conjunction': '連接詞', 'interjection': '感嘆詞',
-                 'abbreviation': '縮寫', 'prefix': '字首', 'suffix': '字尾'
-               };
-               richTransData = transJson[1].map(item => {
-                 const rawPos = item[0] ? item[0].toLowerCase() : '';
-                 return {
-                   pos: posMap[rawPos] || item[0],
-                   terms: Array.isArray(item[1]) ? item[1] : []
-                 };
-               });
-            }
-          }
-          
-          clearTimeout(timeoutId);
+        const fetchChi = (async () => {
+            try {
+                let res = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`, { signal: controller.signal });
+                if (res.ok) {
+                    let transJson = await res.json();
+                    let hasChi = false;
+                    if (transJson) {
+                        if (transJson[0] && transJson[0][0] && transJson[0][0][0]) {
+                            currentData.translation = transJson[0][0][0];
+                            hasChi = true;
+                        }
+                        if (transJson[1] && Array.isArray(transJson[1])) {
+                            const posMap = { 'noun':'名詞', 'verb':'動詞', 'adjective':'形容詞', 'adverb':'副詞', 'pronoun':'代名詞', 'preposition':'介詞', 'conjunction':'連接詞', 'interjection':'感嘆詞', 'abbreviation':'縮寫', 'prefix':'字首', 'suffix':'字尾' };
+                            currentData.richTranslation = transJson[1].map(item => ({
+                                pos: posMap[item[0]?.toLowerCase()] || item[0],
+                                terms: Array.isArray(item[1]) ? item[1] : []
+                            }));
+                            hasChi = true;
+                        }
+                    }
+                    if (hasChi) {
+                        onUpdate({ ...currentData });
+                        try { localStorage.setItem(cacheKey, JSON.stringify(currentData)); } catch(e){}
+                    }
+                }
+            } catch(e) {}
+        })();
 
-          if (!dictData && !transData && richTransData.length === 0) {
-             // 如果兩邊都找不到，依然快取下來，避免下次又浪費時間查
-             const emptyResult = { notFound: true };
-             try { localStorage.setItem(cacheKey, JSON.stringify(emptyResult)); } catch(e){}
-             return emptyResult;
-          }
-          
-          const finalResult = { dict: dictData, translation: transData, richTranslation: richTransData };
-          
-          // 4. 寫入快取，讓下次看時可以直接離線打開
-          try {
-             localStorage.setItem(cacheKey, JSON.stringify(finalResult));
-          } catch(e) {
-             // 忽略快取爆滿錯誤
-             console.warn("Local storage cache full.");
-          }
+        await Promise.allSettled([fetchEng, fetchChi]);
+        clearTimeout(timeoutId);
 
-          return finalResult;
-        } catch (e) {
-           clearTimeout(timeoutId);
-           console.error("API Fetch Error", e);
-           return { error: true, offline: !navigator.onLine };
+        if (wordObj && wordObj.customTrans) {
+            currentData.translation = wordObj.customTrans;
+            currentData.richTranslation = [{ pos: '自訂/片語', terms: wordObj.customTrans.split(/[,，；;]/).map(s => s.trim()) }];
+            onUpdate({ ...currentData });
         }
       };
 
-      const fetchDefinitionForCard = async (wordStr) => {
+      const startPreload = async () => {
+         const uncachedWords = words.filter(w => !localStorage.getItem(`dse_dict_cache_${w.word.toLowerCase()}`));
+         if (uncachedWords.length === 0) {
+             alert("太棒了！所有單字的翻譯都已經下載到手機裡了，可完全離線溫習！");
+             return;
+         }
+
+         if (!window.confirm(`發現有 ${uncachedWords.length} 個單字尚未下載翻譯。\n為避免伺服器封鎖，系統將會進行慢速批次下載（期間可隨時暫停）。\n確定要開始嗎？`)) return;
+
+         setIsPreloading(true);
+         preloadRef.current = true;
+         setPreloadStats({ current: 0, total: uncachedWords.length });
+
+         let successCount = 0;
+
+         for (let i = 0; i < uncachedWords.length; i++) {
+             if (!preloadRef.current) break; 
+
+             const targetWord = uncachedWords[i];
+             const lowerStr = targetWord.word.toLowerCase();
+             const cacheKey = `dse_dict_cache_${lowerStr}`;
+
+             try {
+                 const [dictRes, transRes] = await Promise.allSettled([
+                     fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerStr)}`),
+                     fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerStr)}`)
+                 ]);
+
+                 let currentData = { dict: null, translation: null, richTranslation: [] };
+
+                 if (dictRes.status === 'fulfilled' && dictRes.value.ok) {
+                     const rawArr = await dictRes.value.json();
+                     currentData.dict = extractCompressedDict(rawArr);
+                 }
+
+                 if (transRes.status === 'fulfilled' && transRes.value.ok) {
+                     const transJson = await transRes.value.json();
+                     if (transJson[0] && transJson[0][0] && transJson[0][0][0]) {
+                         currentData.translation = transJson[0][0][0];
+                     }
+                     if (transJson[1] && Array.isArray(transJson[1])) {
+                         const posMap = { 'noun':'名詞', 'verb':'動詞', 'adjective':'形容詞', 'adverb':'副詞', 'pronoun':'代名詞', 'preposition':'介詞', 'conjunction':'連接詞', 'interjection':'感嘆詞', 'abbreviation':'縮寫', 'prefix':'字首', 'suffix':'字尾' };
+                         currentData.richTranslation = transJson[1].map(item => ({
+                             pos: posMap[item[0]?.toLowerCase()] || item[0],
+                             terms: Array.isArray(item[1]) ? item[1] : []
+                         }));
+                     }
+                 }
+
+                 if (targetWord.customTrans) {
+                     currentData.translation = targetWord.customTrans;
+                     currentData.richTranslation = [{ pos: '自訂/片語', terms: targetWord.customTrans.split(/[,，；;]/).map(s => s.trim()) }];
+                 }
+
+                 try {
+                     localStorage.setItem(cacheKey, JSON.stringify(currentData));
+                 } catch (e) {}
+
+                 successCount++;
+                 setPreloadStats({ current: successCount, total: uncachedWords.length });
+
+             } catch (err) {}
+
+             if (preloadRef.current) {
+                 await new Promise(r => setTimeout(r, 600));
+             }
+         }
+
+         setIsPreloading(false);
+         preloadRef.current = false;
+         if (successCount === uncachedWords.length && successCount > 0) {
+             alert("下載完成！所有的單字解釋已成功安全儲存至手機。");
+         }
+      };
+
+      const stopPreload = () => {
+          preloadRef.current = false;
+          setIsPreloading(false);
+      };
+
+      const fetchDefinitionForCard = async (wordObj) => {
         setIsLoadingDef(true);
         setDefinition(null);
-        const result = await fetchDefinitionApi(wordStr);
-        setDefinition(result);
-        setIsLoadingDef(false);
+        await fetchWordData(wordObj.word, wordObj, (data) => {
+            setDefinition(data);
+            if (data.dict || data.translation || data.richTranslation?.length > 0 || data.notFound || data.error) {
+                setIsLoadingDef(false);
+            }
+        });
       };
 
       const openWordDetail = async (item) => {
         setActiveDetailWord(item);
         setDetailNoteInput(item.note || '');
+        setDetailCustomTrans(item.customTrans || '');
         setDetailStatus(item.status);
         setIsLoadingDetailDef(true);
         setDetailDef(null);
 
-        const result = await fetchDefinitionApi(item.word);
-        setDetailDef(result);
-        setIsLoadingDetailDef(false);
+        await fetchWordData(item.word, item, (data) => {
+            setDetailDef(data);
+            if (data.dict || data.translation || data.richTranslation?.length > 0 || data.notFound || data.error) {
+                setIsLoadingDetailDef(false);
+            }
+        });
       };
 
       const saveWordDetail = () => {
         if (!activeDetailWord) return;
-        setWords(prev => prev.map(w => w.word === activeDetailWord.word ? { ...w, note: detailNoteInput, status: detailStatus } : w));
+        setWords(prev => prev.map(w => w.word === activeDetailWord.word ? { ...w, note: detailNoteInput, customTrans: detailCustomTrans, status: detailStatus } : w));
+        
+        const cacheKey = `dse_dict_cache_${activeDetailWord.word.toLowerCase()}`;
+        try {
+            let cached = JSON.parse(localStorage.getItem(cacheKey) || '{}');
+            cached.translation = detailCustomTrans;
+            cached.richTranslation = [{ pos: '自訂/片語', terms: detailCustomTrans.split(/[,，；;]/).map(s => s.trim()) }];
+            localStorage.setItem(cacheKey, JSON.stringify(cached));
+        } catch(e){}
+
         setActiveDetailWord(null);
-        alert("備註與狀態已成功儲存！");
+        alert("備註與自訂意思已成功儲存！");
       };
 
       const handleFlip = () => {
         if (!isFlipped && studyList.length > 0 && studyList[studyIndex]) {
-           fetchDefinitionForCard(studyList[studyIndex].word);
+           fetchDefinitionForCard(studyList[studyIndex]);
         }
         setIsFlipped(!isFlipped);
       };
@@ -601,6 +735,16 @@
         }
       };
 
+      const handlePrevCard = (e) => {
+        if (e) e.stopPropagation();
+        if (studyIndex > 0) {
+          setIsFlipped(false);
+          setStudyIndex(prev => prev - 1);
+        } else {
+          alert('這已經是本階段的第一個單詞了！');
+        }
+      };
+
       const handleUpdateNote = (wordStr, noteStr) => {
         setWords(prev => prev.map(w => w.word === wordStr ? { ...w, note: noteStr } : w));
       };
@@ -623,7 +767,6 @@
       const executeClearAll = () => {
         setWords([]);
         localStorage.removeItem(LOCAL_STORAGE_KEY);
-        // 清除所有字典快取
         Object.keys(localStorage).forEach(key => {
            if (key.startsWith('dse_dict_cache_')) localStorage.removeItem(key);
         });
@@ -632,12 +775,13 @@
         }
         setShowClearConfirmModal(false);
         setView('import');
-        alert("已徹底清空所有記錄！");
+        alert("已徹底清空所有記錄！你可以重新上傳原始檔案了！");
       };
 
       const handleAddCustomWords = () => {
         if (!customWordInput.trim()) return;
-        const newWords = processExtractedText(customWordInput, words);
+        // 手動追加時開啟 (true)
+        const newWords = processExtractedText(customWordInput, words, true);
         
         if (newWords.length > 0) {
           setWords(prev => [...prev, ...newWords]);
@@ -693,9 +837,9 @@
               disabled={isParsing || isSyncing}
               className="w-full py-3 px-6 bg-gray-800 text-white font-bold rounded-xl shadow hover:bg-gray-900 transition flex justify-center text-sm disabled:opacity-50 cursor-pointer"
             >
-              {isParsing ? parseStatus : "上傳相片/圖片/PDF 自動辨識"}
+              {isParsing ? parseStatus : "上傳 PDF / 圖片自動精準拆字"}
             </button>
-            <p className="text-[10px] text-gray-400 mt-3 text-center">精準過濾：維持單字量精確，完美抓取高頻片語</p>
+            <p className="text-[10px] text-gray-400 mt-3 text-center">完美還原 5000 單字，絕不亂拼湊</p>
           </div>
           
           <div className="w-full bg-white rounded-3xl shadow-xl p-6 border border-gray-100 flex flex-col items-center">
@@ -703,7 +847,7 @@
              <textarea 
                value={initialManualInput} 
                onChange={(e) => setInitialManualInput(e.target.value)}
-               placeholder="例如：apple, pull off, a fly in the ointment..." 
+               placeholder="例如：pull off, a fly in the ointment..." 
                className="w-full text-xs p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none resize-none h-24 mb-3"
              />
              <button 
@@ -745,6 +889,8 @@
 
         const progress = Math.round(((studyIndex + 1) / studyList.length) * 100);
         const modeLabels = { 'all': '全部', 'new': '未學', 'review': '錯題複習', 'known': '已掌握' };
+
+        const hasNoDataAtAll = !definition?.dict && !definition?.translation && (!definition?.richTranslation || definition.richTranslation.length === 0);
 
         return (
           <div className="flex flex-col items-center w-full py-4 min-h-[85vh]">
@@ -797,25 +943,34 @@
                   </div>
                   
                   <div className="overflow-y-auto pr-1 flex-grow mb-2">
-                    {isLoadingDef ? (
+                    {isLoadingDef && hasNoDataAtAll ? (
                       <div className="flex flex-col items-center justify-center py-10 text-gray-400">
                          <span className="animate-spin text-2xl mb-2">⏳</span>
-                         <span className="text-xs">努力載入解釋中...</span>
+                         <span className="text-xs">努力獲取字典資料中...</span>
                       </div>
-                    ) : definition?.error ? (
+                    ) : definition?.error && hasNoDataAtAll ? (
                       <div className="flex flex-col items-center justify-center py-8 text-red-400 bg-red-50/50 rounded-xl border border-red-100 mt-2">
                          <span className="text-3xl mb-2">📡</span>
-                         <span className="text-xs font-bold text-red-500 mb-1">{definition.offline ? "目前處於離線狀態" : "網路連線微弱或逾時"}</span>
+                         <span className="text-xs font-bold text-red-500 mb-1">{definition.offline ? "目前處於離線狀態" : "網路連線微弱或已逾時"}</span>
                          <span className="text-[10px] text-red-400 mb-3 text-center">無法即時取得字典資料<br/>(之前已看過的單字支援離線檢視)</span>
-                         <button onClick={(e) => {e.stopPropagation(); fetchDefinitionForCard(currentWordObj.word);}} className="px-4 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold border border-red-200 shadow-sm cursor-pointer">🔄 重新嘗試</button>
+                         <button onClick={(e) => {e.stopPropagation(); fetchDefinitionForCard(currentWordObj);}} className="px-4 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold border border-red-200 shadow-sm cursor-pointer">🔄 重新嘗試</button>
                       </div>
-                    ) : definition?.notFound ? (
-                      <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。</div>
+                    ) : definition?.notFound && hasNoDataAtAll ? (
+                      <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。<br/><span className="text-[10px] text-indigo-600 underline cursor-pointer" onClick={() => openWordDetail(currentWordObj)}>點此手動補上中文意思</span></div>
                     ) : (
                       <div className="text-sm space-y-3 pb-2">
+                        {definition?.offline && (
+                           <div className="bg-orange-50 text-orange-600 text-[10px] px-2 py-1 rounded-md text-center mb-2 border border-orange-100 font-bold">
+                              ⚠️ 目前離線：僅顯示已快取的部分資料
+                           </div>
+                        )}
+
                         {(defLang === 'both' || defLang === 'zh') && (definition?.translation || (definition?.richTranslation && definition.richTranslation.length > 0)) && (
                            <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 mb-3">
-                             <div className="text-[10px] text-indigo-400 font-bold mb-2 uppercase tracking-wider">繁體中文翻譯</div>
+                             <div className="flex justify-between items-center mb-2">
+                               <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-wider">繁體中文翻譯</span>
+                               <span className="text-[10px] text-indigo-600 hover:underline cursor-pointer" onClick={() => openWordDetail(currentWordObj)}>✏️ 編輯意思</span>
+                             </div>
                              
                              {definition?.richTranslation && definition.richTranslation.length > 0 ? (
                                <div className="space-y-2.5">
@@ -832,7 +987,7 @@
                            </div>
                         )}
                         
-                        {(defLang === 'both' || defLang === 'en') && definition?.dict?.meanings ? (
+                        {(defLang === 'both' || defLang === 'en') && definition?.dict?.meanings && (
                            <div className="space-y-3">
                              <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-2">English Definition</div>
                              {definition.dict.phonetic && <span className="font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded text-xs font-bold inline-block">{definition.dict.phonetic}</span>}
@@ -848,19 +1003,19 @@
                                </div>
                              ))}
                            </div>
-                        ) : null}
+                        )}
                       </div>
                     )}
                   </div>
-                  <div className="border-t border-gray-100 pt-3 mt-auto">
-                    <label className="text-[10px] font-bold text-gray-500 uppercase flex items-center mb-1">📝 個人備註</label>
-                    <textarea value={currentWordObj.note || ''} onChange={(e) => handleUpdateNote(currentWordObj.word, e.target.value)} placeholder="輸入專屬筆記..." className="w-full text-xs p-2 bg-amber-50/50 border border-amber-100 rounded-lg outline-none resize-none h-16 text-gray-800" />
+                  <div className="border-t border-gray-100 pt-3 mt-auto flex gap-2">
+                    <input type="text" value={currentWordObj.note || ''} onChange={(e) => handleUpdateNote(currentWordObj.word, e.target.value)} placeholder="輸入專屬備註..." className="w-full text-xs p-2 bg-amber-50/50 border border-amber-100 rounded-lg outline-none text-gray-800" />
                   </div>
                 </div>
               )}
             </div>
 
             <div className="w-full flex justify-between mt-5 gap-2">
+              <button onClick={handlePrevCard} disabled={studyIndex === 0} className="px-3 bg-white border border-gray-300 text-gray-600 font-bold py-3 rounded-xl text-xs hover:bg-gray-50 disabled:opacity-30 cursor-pointer">◀ 上一個</button>
               <button onClick={(e) => handleMarkCard('review', e)} className="flex-1 bg-white border-2 border-orange-200 text-orange-600 font-extrabold py-3 rounded-xl text-xs hover:bg-orange-50 cursor-pointer">🔄 忘記了</button>
               <button onClick={(e) => handleMarkCard('new', e)} className="flex-1 bg-white border-2 border-gray-200 text-gray-500 font-extrabold py-3 rounded-xl text-xs hover:bg-gray-50 cursor-pointer">⏭ 跳過</button>
               <button onClick={(e) => handleMarkCard('known', e)} className="flex-1 bg-white border-2 border-green-200 text-green-600 font-extrabold py-3 rounded-xl text-xs hover:bg-green-50 cursor-pointer">✅ 記得</button>
@@ -886,6 +1041,32 @@
             </div>
 
             <div className="w-full flex flex-col gap-3">
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                <label className="text-xs font-bold text-gray-700 block mb-2">📥 離線字庫批次下載：</label>
+                <p className="text-[10px] text-gray-500 mb-3 leading-relaxed">
+                  預先下載未看過單字的翻譯，搭車無網路也能秒開字卡。<br/>
+                  <span className="text-orange-500 font-bold">(內建智慧壓縮技術，5000字也不怕爆容量。為防伺服器封鎖，下載會自動限速)</span>
+                </p>
+                {isPreloading ? (
+                  <div className="w-full bg-gray-50 p-3 rounded-lg border border-gray-200">
+                    <div className="flex justify-between items-center text-[10px] font-bold text-gray-600 mb-1">
+                       <span>安全下載中...</span>
+                       <span>{preloadStats.current} / {preloadStats.total}</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 mb-3 overflow-hidden">
+                      <div className="bg-green-500 h-full transition-all duration-300" style={{ width: `${(preloadStats.current / preloadStats.total) * 100}%` }}></div>
+                    </div>
+                    <button onClick={stopPreload} className="w-full py-2 bg-red-50 text-red-600 border border-red-200 font-bold rounded text-xs hover:bg-red-100 cursor-pointer">
+                       ⏸ 暫停下載
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm hover:bg-green-100 cursor-pointer flex items-center justify-center gap-2">
+                     <span>⚡ 開始自動下載全部翻譯</span>
+                  </button>
+                )}
+              </div>
+
               <div className="bg-indigo-50/70 p-4 rounded-xl shadow-sm border border-indigo-100 flex items-center justify-between">
                 <div>
                   <p className="text-xs font-bold text-gray-800">☁️ 雲端帳號同步</p>
@@ -930,6 +1111,7 @@
                      return;
                   }
                   setStudyIndex(0); 
+                  setIsFlipped(false);
                   setView('study'); 
                 }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg text-sm shadow hover:bg-indigo-700 cursor-pointer">開始溫習</button>
               </div>
@@ -1078,39 +1260,35 @@
                 </div>
                 
                 <div className="flex-grow overflow-y-auto text-xs mb-3 max-h-[220px]">
-                  {isLoadingDetailDef ? (
+                  {isLoadingDetailDef && !detailDef?.dict && !detailDef?.translation && (!detailDef?.richTranslation || detailDef.richTranslation.length === 0) ? (
                       <div className="flex flex-col items-center justify-center py-10 text-gray-400">
                          <span className="animate-spin text-2xl mb-2">⏳</span>
-                         <span className="text-xs">努力載入解釋中...</span>
+                         <span className="text-xs">努力獲取字典資料中...</span>
                       </div>
-                  ) : detailDef?.error ? (
+                  ) : detailDef?.error && !detailDef?.dict && !detailDef?.translation && (!detailDef?.richTranslation || detailDef.richTranslation.length === 0) ? (
                       <div className="flex flex-col items-center justify-center py-8 text-red-400 bg-red-50/50 rounded-xl border border-red-100 mt-2">
                          <span className="text-3xl mb-2">📡</span>
-                         <span className="text-xs font-bold text-red-500 mb-1">{detailDef.offline ? "目前處於離線狀態" : "網路連線微弱或逾時"}</span>
+                         <span className="text-xs font-bold text-red-500 mb-1">{detailDef.offline ? "目前處於離線狀態" : "網路連線微弱或已逾時"}</span>
                          <span className="text-[10px] text-red-400 mb-3 text-center">無法即時取得字典資料<br/>(之前已看過的單字支援離線檢視)</span>
                          <button onClick={(e) => {e.stopPropagation(); openWordDetail(activeDetailWord);}} className="px-4 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold border border-red-200 shadow-sm cursor-pointer">🔄 重新嘗試</button>
                       </div>
-                  ) : detailDef?.notFound ? (
-                      <div className="text-gray-400 text-xs italic py-4">無此詞彙的線上解釋。</div>
                   ) : (
                      <div className="space-y-3">
-                        {(defLang === 'both' || defLang === 'zh') && (detailDef?.translation || (detailDef?.richTranslation && detailDef.richTranslation.length > 0)) && (
-                           <div className="bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
-                             <div className="text-[10px] text-indigo-400 font-bold mb-2 uppercase tracking-wider">繁體中文翻譯</div>
-                             {detailDef?.richTranslation && detailDef.richTranslation.length > 0 ? (
-                               <div className="space-y-2.5">
-                                 {detailDef.richTranslation.map((rt, idx) => (
-                                   <div key={idx} className="flex items-start text-sm">
-                                     <span className="inline-block px-1.5 py-0.5 bg-indigo-200 text-indigo-800 rounded text-[10px] font-bold mr-2 mt-0.5 shrink-0 whitespace-nowrap">{rt.pos}</span>
-                                     <span className="font-bold text-indigo-900 leading-relaxed">{Array.isArray(rt.terms) ? rt.terms.join('、') : ''}</span>
-                                   </div>
-                                 ))}
-                               </div>
-                             ) : (
-                               <div className="font-bold text-indigo-900 text-sm">{detailDef?.translation}</div>
-                             )}
+                        {detailDef?.offline && (
+                           <div className="bg-orange-50 text-orange-600 text-[10px] px-2 py-1 rounded-md text-center mb-2 border border-orange-100 font-bold">
+                              ⚠️ 目前離線：僅顯示已快取的部分資料
                            </div>
                         )}
+                        <div className="bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
+                          <div className="text-[10px] text-indigo-400 font-bold mb-1 uppercase tracking-wider">繁體中文翻譯（支援直接修改）</div>
+                          <input 
+                             type="text" 
+                             value={detailCustomTrans} 
+                             onChange={(e) => setDetailCustomTrans(e.target.value)} 
+                             placeholder="輸入或修改中文意思（如：成功完成、脫下）" 
+                             className="w-full p-2 text-xs font-bold text-indigo-900 bg-white border border-indigo-200 rounded-lg outline-none"
+                          />
+                        </div>
                         
                         {(defLang === 'both' || defLang === 'en') && detailDef?.dict?.meanings && (
                            <div>
@@ -1126,8 +1304,13 @@
                      </div>
                   )}
                 </div>
-                <textarea value={detailNoteInput} onChange={(e) => setDetailNoteInput(e.target.value)} placeholder="輸入專屬備註..." className="w-full text-xs p-2.5 bg-amber-50/50 border border-amber-200 rounded-xl resize-none h-20 mb-3" />
-                <button onClick={saveWordDetail} className="w-full py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-xs cursor-pointer">💾 確認儲存備註</button>
+                
+                <div className="space-y-2 mb-3">
+                   <label className="text-[10px] font-bold text-gray-500 uppercase block">📝 個人備註筆記</label>
+                   <textarea value={detailNoteInput} onChange={(e) => setDetailNoteInput(e.target.value)} placeholder="輸入專屬備註..." className="w-full text-xs p-2.5 bg-amber-50/50 border border-amber-200 rounded-xl resize-none h-16" />
+                </div>
+
+                <button onClick={saveWordDetail} className="w-full py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-xs cursor-pointer">💾 確認儲存修改</button>
               </div>
             </div>
           )}
@@ -1136,7 +1319,7 @@
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-xs shadow-2xl flex flex-col">
                 <h3 className="text-lg font-black text-gray-900 text-center mb-2">確定要清空所有記錄？</h3>
-                <p className="text-xs text-gray-500 text-center mb-6">這將會永久刪除你所有的單字進度，且無法復原！</p>
+                <p className="text-xs text-gray-500 text-center mb-6">這將會永久刪除你所有的單字進度，請確保已準備好重新上傳！</p>
                 <div className="flex gap-2">
                   <button onClick={() => setShowClearConfirmModal(false)} className="flex-1 py-2.5 bg-gray-100 text-gray-700 font-bold rounded-xl text-xs cursor-pointer">取消</button>
                   <button onClick={executeClearAll} className="flex-1 py-2.5 bg-red-500 text-white font-bold rounded-xl text-xs cursor-pointer">確定清空</button>
@@ -1169,5 +1352,3 @@
   </script>
 </body>
 </html>
-
-
