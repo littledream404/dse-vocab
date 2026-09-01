@@ -77,7 +77,7 @@
     function App() {
       const [words, setWords] = useState([]);
       const [view, setView] = useState('import');
-      const [studyMode, setStudyMode] = useState('all');
+      const [studyMode, setStudyMode] = useState('all'); // 'all' 或 'learning'
       
       const [sessionList, setSessionList] = useState([]);
       const [studyIndex, setStudyIndex] = useState(0);
@@ -126,7 +126,28 @@
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v45'; 
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v46'; 
+
+      const speakWord = (wordStr, accent = 'US', e = null) => {
+        if (e) e.stopPropagation();
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+          const utter = new SpeechSynthesisUtterance(wordStr);
+          utter.lang = accent === 'UK' ? 'en-GB' : 'en-US';
+          window.speechSynthesis.speak(utter);
+        }
+      };
+
+      // 🔊 自動發音功能：當進入單字卡畫面或切換至新單字時，自動播放發音
+      useEffect(() => {
+        if (view === 'study' && sessionList.length > 0 && sessionList[studyIndex]) {
+          // 短暫延遲確保 UI 渲染完畢，避免瀏覽器阻擋
+          const timer = setTimeout(() => {
+            speakWord(sessionList[studyIndex].word, 'US');
+          }, 300);
+          return () => clearTimeout(timer);
+        }
+      }, [view, studyIndex, sessionList]);
 
       const fetchWithRetry = async (url, options, retries = 5) => {
           let delay = 1000;
@@ -211,7 +232,14 @@
       const startStudySession = async () => {
           setIsPreparingSession(true);
           
-          let pool = words.filter(w => w && w.word && (studyMode === 'all' || w.status === studyMode));
+          // 📚 簡化抽卡邏輯：支援 combined 的 'learning' 模式
+          let pool = words.filter(w => {
+              if (!w || !w.word) return false;
+              if (studyMode === 'all') return true;
+              if (studyMode === 'learning') return w.status === 'new' || w.status === 'review';
+              return true;
+          });
+
           if (pool.length === 0) {
               alert("此範圍內沒有單字了！");
               setIsPreparingSession(false);
@@ -352,24 +380,14 @@
         }
       };
 
-      // 🧩 高階升級：長片語與去重演算法 (徹底解決 let the cat out of 碎片問題)
       const detectPotentialPhrases = (text) => {
         const normalizedText = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').toLowerCase();
         let rawPhrases = [];
         
-        // 模式 1：動詞 + 介系詞
         const r1 = /\b(take|get|put|set|go|come|make|look|bring|turn|give|keep|pass|run|break|drop|fall|hold|stand|catch|pay|pick|pull|push|throw|carry|draw|point|walk|work|ward|tone|add|fly|figure|fill|find|hand|leave|let|show|sort|step|think|try|use|wake|wash|wear|wipe|sit)\s+(up|down|in|out|on|off|over|under|away|back|through|with|for|to|into)\b/gi;
-        
-        // 模式 2：介系詞 + 冠詞 + 名詞
         const r2 = /\b(in|on|at|off|under|over|through|into|out of|behind|beyond|without|within|from|by|for)\s+(the|a|an)\s+[a-z]{2,15}\b/gi;
-        
-        // 模式 3：名詞 + 介系詞 + 冠詞 + 名詞 (e.g. fly in the ointment)
         const r3 = /\b[a-z]{3,15}\s+(in|on|at|of|for|with|to|around|about|into|out of)\s+(the|a|an)\s+[a-z]{3,15}\b/gi;
-
-        // 模式 4：動詞 + 名/代名詞 + 介系詞 + 名詞 (嚴格限制動詞以防誤判 commotion)
         const r4 = /\b(let|put|get|take|keep|make|catch|pull|push|throw|bring|turn|give|sweep|beat|blow|cast|draw|drive|hit|lay|leave|play|set)\s+(the|a|an|my|your|his|her|its|our|their|it|all|some)\s+[a-z]{2,12}\s+(in|on|at|of|for|with|to|out of|out|into|off|up|down|about|around|under|over)\s+(the|a|an|my|your|his|her|its|our|their)?\s?[a-z]{2,15}\b/gi;
-
-        // 模式 5：雙介系詞
         const r5 = /\b[a-z]{3,12}\s+(up|down|out|in|on|off)\s+(with|to|for|of)\b/gi;
 
         [r1, r2, r3, r4, r5].forEach(regex => {
@@ -382,7 +400,6 @@
             }
         });
 
-        // 🌟 嚴格去重演算法：由長到短排序，若已被包含則丟棄 (解決碎片化)
         rawPhrases = [...new Set(rawPhrases)].sort((a, b) => b.length - a.length);
         const finalPhrases = [];
         for (let rp of rawPhrases) {
@@ -408,7 +425,6 @@
                 freqMap.set(manualPhrase, 1);
             }
         } else {
-            // 🛑 第一步：直接把「捨棄(Discard)」的片段從文本中挖掉，確保它不會變成單字！
             discardedPhrases.forEach(phrase => {
                 const cleanPhrase = phrase.trim().toLowerCase();
                 if (cleanPhrase) {
@@ -417,7 +433,6 @@
                 }
             });
 
-            // ✅ 第二步：保留打勾的片語，存入字典，並從文本中挖掉
             approvedCustomPhrases.forEach(phrase => {
                 const cleanPhrase = phrase.trim().toLowerCase();
                 if (cleanPhrase && cleanPhrase.includes(' ')) {
@@ -429,7 +444,6 @@
                 }
             });
 
-            // 第三步：拆分剩餘文字為獨立單字
             const wordMatches = cleanText.match(/\b[a-z]+(-[a-z]+)*\b/g);
             if (wordMatches) {
                 wordMatches.forEach(w => {
@@ -462,7 +476,6 @@
       };
 
       const handlePhraseModalSubmit = () => {
-          // 分離出「保留」與「捨棄」的字串
           const approved = detectedPhrases.filter(p => p.status === 'keep' && p.text.trim()).map(p => p.text.trim());
           const discarded = detectedPhrases.filter(p => p.status === 'discard' && p.text.trim()).map(p => p.text.trim());
           
@@ -521,16 +534,6 @@
          setWords(prev => [newObj, ...prev]);
          setNewWordInput('');
          alert(`成功手動新增：${w}`);
-      };
-
-      const speakWord = (wordStr, accent = 'US', e) => {
-        if (e) e.stopPropagation();
-        if ('speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-          const utter = new SpeechSynthesisUtterance(wordStr);
-          utter.lang = accent === 'UK' ? 'en-GB' : 'en-US';
-          window.speechSynthesis.speak(utter);
-        }
       };
 
       const fetchWordData = async (wordStr, wordObj, onUpdate) => {
@@ -725,7 +728,6 @@
           return <div className="font-bold text-indigo-900 text-base">{defObj.translation || '無翻譯資料'}</div>;
       };
 
-      // 📖 智慧隱藏無效英文解釋
       const renderRichEnglish = (defObj) => {
           if (!defObj || !Array.isArray(defObj.enDef) || defObj.enDef.length === 0) return null;
           
@@ -787,7 +789,6 @@
       const renderStudy = () => {
         if (!words || words.length === 0 || sessionList.length === 0) return <div className="py-20 text-center">無單字可溫習</div>;
         
-        // 防崩潰保護
         const currentWordObj = sessionList[studyIndex];
         if (!currentWordObj || !currentWordObj.word) return <div className="py-20 text-center text-gray-500 font-bold">本回合已完成或無效單字。</div>;
 
@@ -834,7 +835,6 @@
                             {renderRichChinese(definition)}
                           </div>
                         )}
-                        {/* 只有當有英文解釋時才會顯示該區塊，保持版面乾淨 */}
                         {(defLang === 'both' || defLang === 'en') && renderRichEnglish(definition)}
                       </div>
                     )}
@@ -902,13 +902,12 @@
                 </select>
               </div>
 
+              {/* 📚 精簡選項：合併了未學習與需複習，刪除了已掌握 */}
               <div className="bg-white p-4 rounded-xl shadow-sm border">
                 <label className="text-xs font-bold text-gray-700 block mb-2">🎯 抽取 20 單字回合：</label>
                 <select value={studyMode} onChange={(e) => setStudyMode(e.target.value)} className="w-full p-2.5 text-sm border rounded-lg outline-none bg-indigo-50/50 text-indigo-900 font-semibold cursor-pointer mb-3">
                   <option value="all">從全部單字抽 (啟動 AI 網上搜尋高頻詞優先)</option>
-                  <option value="new">🆕 只從「未學習」隨機抽</option>
-                  <option value="review">🔄 只從「需複習」錯題隨機抽</option>
-                  <option value="known">✅ 只從「已掌握」隨機抽</option>
+                  <option value="learning">🆕 🔄 只從「未學習 / 需複習」隨機抽</option>
                 </select>
                 <button onClick={startStudySession} disabled={isPreparingSession} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg text-sm shadow cursor-pointer disabled:opacity-50">▶ 開始 20 字隨機學習回合</button>
               </div>
@@ -1032,7 +1031,6 @@
             {view === 'list' && renderList()}
           </main>
 
-          {/* 💡 終極升級：加入「捨棄」按鈕的智慧編輯視窗 */}
           {showPhraseModal && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
