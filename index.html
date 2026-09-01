@@ -77,7 +77,7 @@
     function App() {
       const [words, setWords] = useState([]);
       const [view, setView] = useState('import');
-      const [studyMode, setStudyMode] = useState('all'); // 'all' 或 'learning'
+      const [studyMode, setStudyMode] = useState('all'); 
       
       const [sessionList, setSessionList] = useState([]);
       const [studyIndex, setStudyIndex] = useState(0);
@@ -117,7 +117,6 @@
       const preloadRef = useRef(false);
       const wakeLockRef = useRef(null);
 
-      // 片語探測狀態：加入 action 屬性 ('keep' | 'split' | 'discard')
       const [showPhraseModal, setShowPhraseModal] = useState(false);
       const [detectedPhrases, setDetectedPhrases] = useState([]); 
       const [pendingFileText, setPendingFileText] = useState(''); 
@@ -126,7 +125,7 @@
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v46'; 
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v46'; // 保持同一個 Key 不遺失資料
 
       const speakWord = (wordStr, accent = 'US', e = null) => {
         if (e) e.stopPropagation();
@@ -138,10 +137,8 @@
         }
       };
 
-      // 🔊 自動發音功能：當進入單字卡畫面或切換至新單字時，自動播放發音
       useEffect(() => {
         if (view === 'study' && sessionList.length > 0 && sessionList[studyIndex]) {
-          // 短暫延遲確保 UI 渲染完畢，避免瀏覽器阻擋
           const timer = setTimeout(() => {
             speakWord(sessionList[studyIndex].word, 'US');
           }, 300);
@@ -232,7 +229,6 @@
       const startStudySession = async () => {
           setIsPreparingSession(true);
           
-          // 📚 簡化抽卡邏輯：支援 combined 的 'learning' 模式
           let pool = words.filter(w => {
               if (!w || !w.word) return false;
               if (studyMode === 'all') return true;
@@ -364,7 +360,6 @@
           setTimeout(() => {
               const potentialPhrases = detectPotentialPhrases(fullText);
               if (potentialPhrases.length > 0) {
-                  // 🌟 狀態升級：加入 status 屬性 ('keep', 'split', 'discard')
                   const editablePhrases = potentialPhrases.map((p, index) => ({ id: index, text: p, status: 'keep' }));
                   setDetectedPhrases(editablePhrases);
                   setIsParsing(false);
@@ -676,11 +671,12 @@
         alert("已清空單字清單（離線翻譯快取已保留）。");
       };
 
+      // 🚀 極速並發下載引擎 (Chunking Algorithm)
       const startPreload = async () => {
          const uncachedWords = words.filter(w => w && w.word && !localStorage.getItem(`dse_dict_cache_v5_${w.word.toLowerCase()}`));
          if (uncachedWords.length === 0) { alert("所有翻譯皆已下載完畢！"); return; }
 
-         if (!window.confirm(`準備下載 ${uncachedWords.length} 個單字的離線雙語翻譯包？`)) return;
+         if (!window.confirm(`準備下載 ${uncachedWords.length} 個單字的離線雙語翻譯包？\n⚡ 已為你開啟「多執行緒極速下載」模式！`)) return;
 
          setIsPreloading(true);
          preloadRef.current = true;
@@ -690,24 +686,31 @@
              if ('wakeLock' in navigator) wakeLockRef.current = await navigator.wakeLock.request('screen');
          } catch(e) {}
 
-         let idx = 0;
+         // 批次處理：每次併發處理 8 個單字 (大幅提升速度並避免 API Rate Limit)
+         const CHUNK_SIZE = 8; 
          let count = 0;
-         const worker = async () => {
-             while (idx < uncachedWords.length && preloadRef.current) {
-                 const i = idx++;
-                 if (i >= uncachedWords.length) break;
-                 const wObj = uncachedWords[i];
-                 await fetchWordData(wObj.word, wObj, () => {}); 
-                 count++;
-                 setPreloadStats({ current: count, total: uncachedWords.length });
-                 await new Promise(r => setTimeout(r, 200));
-             }
-         };
 
-         await Promise.all([worker(), worker(), worker()]);
+         for (let i = 0; i < uncachedWords.length; i += CHUNK_SIZE) {
+             if (!preloadRef.current) break; // 暫停機制
+
+             const chunk = uncachedWords.slice(i, i + CHUNK_SIZE);
+             // 產生這 8 個單字的並發請求陣列
+             const promises = chunk.map(wObj => fetchWordData(wObj.word, wObj, () => {}));
+             
+             // 等待這 8 個請求全部完成
+             await Promise.allSettled(promises);
+             
+             count += chunk.length;
+             // 按批次更新 UI 進度，減少不必要的畫面重繪卡頓
+             setPreloadStats({ current: Math.min(count, uncachedWords.length), total: uncachedWords.length });
+             
+             // 短暫延遲，保護 API 不被 HTTP 429 封鎖
+             await new Promise(r => setTimeout(r, 100));
+         }
+
          setIsPreloading(false);
          if (wakeLockRef.current) { wakeLockRef.current.release().catch(()=>{}); wakeLockRef.current = null; }
-         alert("離線翻譯包下載完成！");
+         if (preloadRef.current) alert("離線翻譯包極速下載完成！");
       };
 
       const changeLangPreference = (e) => {
@@ -883,13 +886,13 @@
                 {isPreloading ? (
                   <div className="w-full bg-indigo-50 p-3 rounded-lg border">
                     <div className="flex justify-between text-[10px] font-bold text-indigo-700 mb-2">
-                       <span>極速下載中...</span>
+                       <span>⚡ 極速下載中...</span>
                        <span>{preloadStats.current} / {preloadStats.total}</span>
                     </div>
                     <button onClick={() => { preloadRef.current = false; setIsPreloading(false); }} className="w-full py-2 bg-red-50 text-red-600 border rounded-lg text-xs cursor-pointer">暫停下載</button>
                   </div>
                 ) : (
-                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer">⚡ 開始極速下載全部雙語翻譯</button>
+                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer">⚡ 開始極速下載 (多執行緒加速)</button>
                 )}
               </div>
 
@@ -902,7 +905,6 @@
                 </select>
               </div>
 
-              {/* 📚 精簡選項：合併了未學習與需複習，刪除了已掌握 */}
               <div className="bg-white p-4 rounded-xl shadow-sm border">
                 <label className="text-xs font-bold text-gray-700 block mb-2">🎯 抽取 20 單字回合：</label>
                 <select value={studyMode} onChange={(e) => setStudyMode(e.target.value)} className="w-full p-2.5 text-sm border rounded-lg outline-none bg-indigo-50/50 text-indigo-900 font-semibold cursor-pointer mb-3">
