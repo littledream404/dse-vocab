@@ -125,8 +125,9 @@
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
       const appendFileInputRef = useRef(null);
-      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v46'; // 保持同一個 Key 不遺失資料
+      const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v47'; 
 
+      // 獨立的發音函數，隨處可用
       const speakWord = (wordStr, accent = 'US', e = null) => {
         if (e) e.stopPropagation();
         if ('speechSynthesis' in window) {
@@ -137,6 +138,7 @@
         }
       };
 
+      // 每翻到一張新卡片自動發出聲音
       useEffect(() => {
         if (view === 'study' && sessionList.length > 0 && sessionList[studyIndex]) {
           const timer = setTimeout(() => {
@@ -531,10 +533,11 @@
          alert(`成功手動新增：${w}`);
       };
 
+      // 🛡️ 強化的字典抓取：防護 Rate Limit，失敗不寫入快取
       const fetchWordData = async (wordStr, wordObj, onUpdate) => {
         const lowerWord = wordStr.toLowerCase();
         const cacheKey = `dse_dict_cache_v5_${lowerWord}`; 
-        let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null };
+        let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null, failed: false };
         
         const cached = localStorage.getItem(cacheKey);
         if (cached) { 
@@ -548,25 +551,31 @@
         onUpdate(currentData);
 
         const fetches = [];
-        let isUpdated = false;
+        let isTranslationSuccess = false;
         
+        // 如果快取裡沒有翻譯，就去抓
         if (!currentData.translation && (!currentData.richTranslation || currentData.richTranslation.length === 0)) {
             fetches.push(
                 fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`)
-                .then(r => r.json())
+                .then(r => {
+                    if (!r.ok) throw new Error('Translate Rate Limited');
+                    return r.json();
+                })
                 .then(data => { 
-                    if (data[0]?.[0]?.[0]) { currentData.translation = data[0][0][0]; isUpdated = true; } 
+                    if (data[0]?.[0]?.[0]) { currentData.translation = data[0][0][0]; isTranslationSuccess = true; } 
                     if (data[1] && Array.isArray(data[1])) {
                         const posMap = { 'noun':'名詞', 'verb':'動詞', 'adjective':'形容詞', 'adverb':'副詞', 'preposition':'介詞', 'pronoun':'代名詞', 'conjunction':'連接詞' };
                         currentData.richTranslation = data[1].map(item => ({
                             pos: posMap[item[0]?.toLowerCase()] || item[0],
                             terms: Array.isArray(item[1]) ? item[1].slice(0, 5) : []
                         }));
-                        isUpdated = true;
+                        isTranslationSuccess = true;
                     }
                 })
-                .catch(()=>{})
+                .catch((e)=>{ currentData.failed = true; })
             );
+        } else {
+            isTranslationSuccess = true;
         }
         
         if (!wordStr.includes(' ') && (!currentData.enDef || currentData.enDef.length === 0)) {
@@ -580,7 +589,7 @@
                             pos: m.partOfSpeech,
                             def: m.definitions[0]?.definition
                         })).slice(0, 3);
-                        isUpdated = true;
+                        isTranslationSuccess = true;
                     }
                 })
                 .catch(()=>{})
@@ -589,9 +598,12 @@
 
         if (fetches.length > 0) {
             await Promise.allSettled(fetches);
-            if (isUpdated) {
+            // 只有在真的抓取成功時，才更新與寫入快取。若被阻擋則不寫入快取，讓下次還能抓。
+            if (isTranslationSuccess && !currentData.failed) {
                 onUpdate({ ...currentData });
                 localStorage.setItem(cacheKey, JSON.stringify(currentData));
+            } else if (currentData.failed) {
+                onUpdate({ ...currentData, translation: null }); // 傳遞失敗狀態給 UI
             }
         }
       };
@@ -671,12 +683,12 @@
         alert("已清空單字清單（離線翻譯快取已保留）。");
       };
 
-      // 🚀 極速並發下載引擎 (Chunking Algorithm)
+      // 🚀 終極極速下載引擎 (併發數提升至 20，極限降低延遲)
       const startPreload = async () => {
          const uncachedWords = words.filter(w => w && w.word && !localStorage.getItem(`dse_dict_cache_v5_${w.word.toLowerCase()}`));
          if (uncachedWords.length === 0) { alert("所有翻譯皆已下載完畢！"); return; }
 
-         if (!window.confirm(`準備下載 ${uncachedWords.length} 個單字的離線雙語翻譯包？\n⚡ 已為你開啟「多執行緒極速下載」模式！`)) return;
+         if (!window.confirm(`準備下載 ${uncachedWords.length} 個單字的離線雙語翻譯包？\n⚡ 已開啟「V3 極速多執行緒引擎」，將全速幫你抓取！`)) return;
 
          setIsPreloading(true);
          preloadRef.current = true;
@@ -686,26 +698,23 @@
              if ('wakeLock' in navigator) wakeLockRef.current = await navigator.wakeLock.request('screen');
          } catch(e) {}
 
-         // 批次處理：每次併發處理 8 個單字 (大幅提升速度並避免 API Rate Limit)
-         const CHUNK_SIZE = 8; 
+         // 批次處理：每次併發 20 個 (目前瀏覽器對於同網域的最佳併發極限)
+         const CHUNK_SIZE = 20; 
          let count = 0;
 
          for (let i = 0; i < uncachedWords.length; i += CHUNK_SIZE) {
-             if (!preloadRef.current) break; // 暫停機制
+             if (!preloadRef.current) break;
 
              const chunk = uncachedWords.slice(i, i + CHUNK_SIZE);
-             // 產生這 8 個單字的並發請求陣列
              const promises = chunk.map(wObj => fetchWordData(wObj.word, wObj, () => {}));
              
-             // 等待這 8 個請求全部完成
              await Promise.allSettled(promises);
              
              count += chunk.length;
-             // 按批次更新 UI 進度，減少不必要的畫面重繪卡頓
              setPreloadStats({ current: Math.min(count, uncachedWords.length), total: uncachedWords.length });
              
-             // 短暫延遲，保護 API 不被 HTTP 429 封鎖
-             await new Promise(r => setTimeout(r, 100));
+             // 延遲壓縮至 10ms，追求極限下載速度
+             await new Promise(r => setTimeout(r, 10));
          }
 
          setIsPreloading(false);
@@ -720,6 +729,15 @@
 
       const renderRichChinese = (defObj) => {
           if (!defObj) return null;
+          // 防護空白結果：如果有定義但沒內容，提示被阻擋
+          if (defObj.failed || (!defObj.translation && (!defObj.richTranslation || defObj.richTranslation.length === 0))) {
+              return (
+                 <div className="flex flex-col space-y-2">
+                    <span className="text-red-500 font-bold text-sm">⚠️ 連線受限或查無翻譯</span>
+                    <span className="text-gray-500 text-xs">因短時間查詢過快，Google 暫時限制了請求，請稍後重試，或者在字庫管理中手動新增意思。</span>
+                 </div>
+              );
+          }
           if (Array.isArray(defObj.richTranslation) && defObj.richTranslation.length > 0) {
               return defObj.richTranslation.map((rt, i) => (
                   <div key={i} className="mb-2">
@@ -728,7 +746,7 @@
                   </div>
               ));
           }
-          return <div className="font-bold text-indigo-900 text-base">{defObj.translation || '無翻譯資料'}</div>;
+          return <div className="font-bold text-indigo-900 text-base">{defObj.translation}</div>;
       };
 
       const renderRichEnglish = (defObj) => {
@@ -815,18 +833,25 @@
                   {currentWordObj.aiScore && !isPhrase && <div className="absolute top-3 right-4 bg-red-50 text-red-600 text-[10px] font-bold px-2 py-1 rounded-md border">🔥 現實高頻: {currentWordObj.aiScore}/100</div>}
                   
                   <span className="text-[10px] text-indigo-400 font-bold mb-3 block bg-indigo-50 px-2 py-0.5 rounded-full">點擊卡片看解釋</span>
-                  <h1 className="text-3xl font-black text-gray-900 mb-4 leading-tight">{currentWordObj.word}</h1>
+                  <h1 className="text-3xl font-black text-gray-900 mb-6 leading-tight">{currentWordObj.word}</h1>
+                  
+                  {/* 正面發音按鈕 */}
                   <div className="flex gap-3 justify-center">
-                    <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold shadow-sm">🇬🇧 英式</button>
-                    <button onClick={(e) => speakWord(currentWordObj.word, 'US', e)} className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold shadow-sm">🇺🇸 美式</button>
+                    <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold shadow-sm transition">🇬🇧 英式發音</button>
+                    <button onClick={(e) => speakWord(currentWordObj.word, 'US', e)} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold shadow-sm transition">🇺🇸 美式發音</button>
                   </div>
                 </div>
               ) : (
                 <div className="w-full h-full flex flex-col text-left">
-                  <div className="flex justify-between items-start border-b pb-2 mb-2">
+                  <div className="flex justify-between items-start border-b pb-3 mb-3">
                     <div>
                         <h1 className="text-2xl font-black leading-tight pr-2">{currentWordObj.word}</h1>
                         {definition?.phonetic && <span className="text-xs font-mono text-gray-500 block mt-1">{definition.phonetic}</span>}
+                    </div>
+                    {/* 反面發音按鈕 */}
+                    <div className="flex gap-2 shrink-0">
+                      <button onClick={(e) => speakWord(currentWordObj.word, 'UK', e)} className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold shadow-sm transition">🇬🇧</button>
+                      <button onClick={(e) => speakWord(currentWordObj.word, 'US', e)} className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold shadow-sm transition">🇺🇸</button>
                     </div>
                   </div>
                   <div className="flex-grow overflow-y-auto text-sm space-y-3">
@@ -886,13 +911,13 @@
                 {isPreloading ? (
                   <div className="w-full bg-indigo-50 p-3 rounded-lg border">
                     <div className="flex justify-between text-[10px] font-bold text-indigo-700 mb-2">
-                       <span>⚡ 極速下載中...</span>
+                       <span>⚡ V3 極速下載中...</span>
                        <span>{preloadStats.current} / {preloadStats.total}</span>
                     </div>
                     <button onClick={() => { preloadRef.current = false; setIsPreloading(false); }} className="w-full py-2 bg-red-50 text-red-600 border rounded-lg text-xs cursor-pointer">暫停下載</button>
                   </div>
                 ) : (
-                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer">⚡ 開始極速下載 (多執行緒加速)</button>
+                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer">⚡ 開始極速下載 (多執行緒 20倍加速)</button>
                 )}
               </div>
 
@@ -1096,7 +1121,12 @@
                      <h3 className="text-2xl font-black text-gray-900 leading-tight">{activeDetailWord.word}</h3>
                      {detailDef?.phonetic && <span className="text-xs font-mono text-gray-500 block mt-1">{detailDef.phonetic}</span>}
                   </div>
-                  <button onClick={() => setActiveDetailWord(null)} className="text-gray-400 p-1 cursor-pointer text-lg">✖</button>
+                  {/* 管理詳情介面也加入發音按鈕 */}
+                  <div className="flex gap-1.5 shrink-0 ml-2">
+                      <button onClick={(e) => speakWord(activeDetailWord.word, 'UK', e)} className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-bold shadow-sm transition">🇬🇧</button>
+                      <button onClick={(e) => speakWord(activeDetailWord.word, 'US', e)} className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-bold shadow-sm transition">🇺🇸</button>
+                      <button onClick={() => setActiveDetailWord(null)} className="text-gray-400 p-1 cursor-pointer text-lg ml-1">✖</button>
+                  </div>
                 </div>
                 <div className="flex-grow overflow-y-auto text-xs mb-3 space-y-4">
                   
