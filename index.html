@@ -127,7 +127,6 @@
       const appendFileInputRef = useRef(null);
       const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v47'; 
 
-      // 獨立的發音函數，隨處可用
       const speakWord = (wordStr, accent = 'US', e = null) => {
         if (e) e.stopPropagation();
         if ('speechSynthesis' in window) {
@@ -138,7 +137,6 @@
         }
       };
 
-      // 每翻到一張新卡片自動發出聲音
       useEffect(() => {
         if (view === 'study' && sessionList.length > 0 && sessionList[studyIndex]) {
           const timer = setTimeout(() => {
@@ -533,11 +531,11 @@
          alert(`成功手動新增：${w}`);
       };
 
-      // 🛡️ 強化的字典抓取：防護 Rate Limit，失敗不寫入快取
+      // 🛡️ 升級版：智能防護字典抓取 API，解決空白與重複請求問題
       const fetchWordData = async (wordStr, wordObj, onUpdate) => {
         const lowerWord = wordStr.toLowerCase();
         const cacheKey = `dse_dict_cache_v5_${lowerWord}`; 
-        let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null, failed: false };
+        let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null, failed: false, enDefFailed: false };
         
         const cached = localStorage.getItem(cacheKey);
         if (cached) { 
@@ -553,12 +551,11 @@
         const fetches = [];
         let isTranslationSuccess = false;
         
-        // 如果快取裡沒有翻譯，就去抓
         if (!currentData.translation && (!currentData.richTranslation || currentData.richTranslation.length === 0)) {
             fetches.push(
                 fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`)
                 .then(r => {
-                    if (!r.ok) throw new Error('Translate Rate Limited');
+                    if (!r.ok) throw new Error('Google Translate Rate Limited');
                     return r.json();
                 })
                 .then(data => { 
@@ -571,6 +568,7 @@
                         }));
                         isTranslationSuccess = true;
                     }
+                    if (!isTranslationSuccess) currentData.failed = true; // 如果資料格式異常，標記失敗
                 })
                 .catch((e)=>{ currentData.failed = true; })
             );
@@ -578,10 +576,14 @@
             isTranslationSuccess = true;
         }
         
-        if (!wordStr.includes(' ') && (!currentData.enDef || currentData.enDef.length === 0)) {
+        // 智能記憶：如果之前確定查不到英英解釋 (enDefFailed)，就不要再浪費網路請求了
+        if (!wordStr.includes(' ') && !currentData.enDefFailed && (!currentData.enDef || currentData.enDef.length === 0)) {
             fetches.push(
                 fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerWord)}`)
-                .then(r => r.json())
+                .then(r => {
+                    if (!r.ok) { currentData.enDefFailed = true; throw new Error('Not found in Dict'); }
+                    return r.json();
+                })
                 .then(data => { 
                     if (data[0]?.meanings) {
                         currentData.phonetic = data[0].phonetic || data[0].phonetics?.find(p => p.text)?.text || '';
@@ -589,21 +591,27 @@
                             pos: m.partOfSpeech,
                             def: m.definitions[0]?.definition
                         })).slice(0, 3);
-                        isTranslationSuccess = true;
+                    } else {
+                        currentData.enDefFailed = true;
                     }
                 })
-                .catch(()=>{})
+                .catch(()=>{ currentData.enDefFailed = true; })
             );
         }
 
         if (fetches.length > 0) {
             await Promise.allSettled(fetches);
-            // 只有在真的抓取成功時，才更新與寫入快取。若被阻擋則不寫入快取，讓下次還能抓。
+            // 只有在成功翻譯且沒遇到阻擋時，才寫入快取 (防護空白快取覆蓋)
             if (isTranslationSuccess && !currentData.failed) {
                 onUpdate({ ...currentData });
-                localStorage.setItem(cacheKey, JSON.stringify(currentData));
+                try {
+                    localStorage.setItem(cacheKey, JSON.stringify(currentData));
+                } catch(e) {
+                    console.warn("快取空間可能已滿，本次暫存失敗", e);
+                }
             } else if (currentData.failed) {
-                onUpdate({ ...currentData, translation: null }); // 傳遞失敗狀態給 UI
+                // 如果失敗，通知 UI 渲染「連線受限」提示，但不存入 localStorage，讓下次能重新抓取
+                onUpdate({ ...currentData, translation: null });
             }
         }
       };
@@ -683,22 +691,26 @@
         alert("已清空單字清單（離線翻譯快取已保留）。");
       };
 
-      // 🚀 終極極速下載引擎 (併發數提升至 20，極限降低延遲)
+      // 🚀 終極斷點續傳進度條 + V3 極速引擎
       const startPreload = async () => {
          const uncachedWords = words.filter(w => w && w.word && !localStorage.getItem(`dse_dict_cache_v5_${w.word.toLowerCase()}`));
-         if (uncachedWords.length === 0) { alert("所有翻譯皆已下載完畢！"); return; }
+         const totalWordsCount = words.length;
+         const alreadyCachedCount = totalWordsCount - uncachedWords.length;
 
-         if (!window.confirm(`準備下載 ${uncachedWords.length} 個單字的離線雙語翻譯包？\n⚡ 已開啟「V3 極速多執行緒引擎」，將全速幫你抓取！`)) return;
+         if (uncachedWords.length === 0) { alert("所有單字的翻譯皆已下載完畢！"); return; }
+
+         if (!window.confirm(`字庫共 ${totalWordsCount} 字，目前已下載 ${alreadyCachedCount} 字。\n準備繼續下載剩餘的 ${uncachedWords.length} 字？\n⚡ 已為你開啟「V3 斷點續傳極速引擎」！`)) return;
 
          setIsPreloading(true);
          preloadRef.current = true;
-         setPreloadStats({ current: 0, total: uncachedWords.length });
+         // 💡 UI 進度條從「已經下載好的數量」開始累加，不會再歸零消失！
+         setPreloadStats({ current: alreadyCachedCount, total: totalWordsCount });
 
          try {
              if ('wakeLock' in navigator) wakeLockRef.current = await navigator.wakeLock.request('screen');
          } catch(e) {}
 
-         // 批次處理：每次併發 20 個 (目前瀏覽器對於同網域的最佳併發極限)
+         // 批次並發數提升為 20，極大化瀏覽器網速效能
          const CHUNK_SIZE = 20; 
          let count = 0;
 
@@ -711,9 +723,9 @@
              await Promise.allSettled(promises);
              
              count += chunk.length;
-             setPreloadStats({ current: Math.min(count, uncachedWords.length), total: uncachedWords.length });
+             setPreloadStats({ current: Math.min(alreadyCachedCount + count, totalWordsCount), total: totalWordsCount });
              
-             // 延遲壓縮至 10ms，追求極限下載速度
+             // 延遲壓縮至 10ms (只做極短緩衝，大幅提升速度)
              await new Promise(r => setTimeout(r, 10));
          }
 
@@ -729,15 +741,17 @@
 
       const renderRichChinese = (defObj) => {
           if (!defObj) return null;
-          // 防護空白結果：如果有定義但沒內容，提示被阻擋
+          
+          // 🛡️ 防護空白顯示：如果 API 被阻擋，明確提示使用者，而不是留下一片空白
           if (defObj.failed || (!defObj.translation && (!defObj.richTranslation || defObj.richTranslation.length === 0))) {
               return (
-                 <div className="flex flex-col space-y-2">
-                    <span className="text-red-500 font-bold text-sm">⚠️ 連線受限或查無翻譯</span>
-                    <span className="text-gray-500 text-xs">因短時間查詢過快，Google 暫時限制了請求，請稍後重試，或者在字庫管理中手動新增意思。</span>
+                 <div className="flex flex-col space-y-1.5 p-2 bg-red-50 border border-red-100 rounded-lg">
+                    <span className="text-red-500 font-bold text-xs">⚠️ 連線受限或查無翻譯</span>
+                    <span className="text-gray-500 text-[10px] leading-relaxed">因短時間查詢過快，Google 暫時限制了請求，請稍後重試，或者在字庫管理中手動新增意思。</span>
                  </div>
               );
           }
+          
           if (Array.isArray(defObj.richTranslation) && defObj.richTranslation.length > 0) {
               return defObj.richTranslation.map((rt, i) => (
                   <div key={i} className="mb-2">
@@ -909,15 +923,16 @@
               <div className="bg-white p-4 rounded-xl shadow-sm border">
                 <label className="text-xs font-bold text-gray-700 block mb-2">📥 離線字庫批次下載：</label>
                 {isPreloading ? (
-                  <div className="w-full bg-indigo-50 p-3 rounded-lg border">
+                  <div className="w-full bg-indigo-50 p-3 rounded-lg border border-indigo-200">
                     <div className="flex justify-between text-[10px] font-bold text-indigo-700 mb-2">
-                       <span>⚡ V3 極速下載中...</span>
-                       <span>{preloadStats.current} / {preloadStats.total}</span>
+                       <span>⚡ V3 斷點續傳極速下載中...</span>
+                       {/* 💡 真實累積進度與百分比，消除遺失錯覺 */}
+                       <span>{preloadStats.current} / {preloadStats.total} ({Math.round((preloadStats.current / preloadStats.total) * 100)}%)</span>
                     </div>
-                    <button onClick={() => { preloadRef.current = false; setIsPreloading(false); }} className="w-full py-2 bg-red-50 text-red-600 border rounded-lg text-xs cursor-pointer">暫停下載</button>
+                    <button onClick={() => { preloadRef.current = false; setIsPreloading(false); }} className="w-full py-2 bg-red-50 text-red-600 border rounded-lg text-xs cursor-pointer font-bold shadow-sm">暫停下載</button>
                   </div>
                 ) : (
-                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer">⚡ 開始極速下載 (多執行緒 20倍加速)</button>
+                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer shadow-sm">⚡ 開始極速下載 (多執行緒 20 倍加速)</button>
                 )}
               </div>
 
