@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DSE 5000+ 單字神器 (極速快取版)</title>
+  <title>DSE 5000+ 單字神器</title>
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- React & ReactDOM -->
@@ -39,6 +39,7 @@
 
     let auth = null;
     let db = null;
+
     try {
       if (firebaseConfig.apiKey) {
         firebase.initializeApp(firebaseConfig);
@@ -47,59 +48,47 @@
       }
     } catch(e) {}
 
-    // --- IndexedDB 核心資料庫 (永久保留翻譯快取) ---
-    const idbPromise = (async () => {
-        return new Promise((resolve) => {
-            if (!window.indexedDB) return resolve(null);
-            const req = indexedDB.open('DSE_Vocab_Translations_DB', 1);
-            req.onupgradeneeded = (e) => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains('dictCache')) db.createObjectStore('dictCache');
-            };
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => resolve(null);
-        });
-    })();
-
-    const getDictCache = async (key) => {
-        try {
-            const db = await idbPromise;
-            if (!db) return null;
+    // 🚀 升級底層快取資料庫 (IndexedDB) 解決 5MB 空間爆炸問題
+    const idb = {
+        db: null,
+        init: async () => {
+            if (idb.db) return idb.db;
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open('DSEVocabDB_v2', 1);
+                req.onupgradeneeded = (e) => {
+                    e.target.result.createObjectStore('dictCache');
+                };
+                req.onsuccess = (e) => { idb.db = e.target.result; resolve(idb.db); };
+                req.onerror = () => reject();
+            });
+        },
+        get: async (key) => {
+            const db = await idb.init();
             return new Promise((resolve) => {
                 const tx = db.transaction('dictCache', 'readonly');
                 const req = tx.objectStore('dictCache').get(key);
-                req.onsuccess = () => resolve(req.result || null);
+                req.onsuccess = () => resolve(req.result);
                 req.onerror = () => resolve(null);
             });
-        } catch(e) { return null; }
-    };
-
-    const setDictCache = async (key, value) => {
-        try {
-            const db = await idbPromise;
-            if (!db) return false;
+        },
+        set: async (key, val) => {
+            const db = await idb.init();
             return new Promise((resolve) => {
                 const tx = db.transaction('dictCache', 'readwrite');
-                const req = tx.objectStore('dictCache').put(value, key);
-                req.onsuccess = () => resolve(true);
-                req.onerror = () => resolve(false);
+                tx.objectStore('dictCache').put(val, key);
+                tx.oncomplete = () => resolve();
             });
-        } catch(e) { return false; }
-    };
-
-    const getAllDictCacheKeys = async () => {
-        try {
-            const db = await idbPromise;
-            if (!db) return new Set();
+        },
+        keys: async () => {
+            const db = await idb.init();
             return new Promise((resolve) => {
                 const tx = db.transaction('dictCache', 'readonly');
                 const req = tx.objectStore('dictCache').getAllKeys();
-                req.onsuccess = () => resolve(new Set(req.result));
-                req.onerror = () => resolve(new Set());
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => resolve([]);
             });
-        } catch(e) { return new Set(); }
+        }
     };
-    // -------------------------------------------------------------
 
     const { useState, useEffect, useRef, Component } = React;
 
@@ -116,7 +105,7 @@
             <div className="flex flex-col items-center justify-center min-h-screen p-6 text-center bg-slate-50">
               <div className="text-4xl mb-3">⚠️</div>
               <h2 className="text-lg font-bold text-gray-800 mb-2">畫面遇到了一點小狀況</h2>
-              <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-xs cursor-pointer shadow mt-4">重新載入頁面</button>
+              <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-xs cursor-pointer shadow">重新載入頁面</button>
             </div>
           );
         }
@@ -124,8 +113,7 @@
       }
     }
 
-    // 💡 修正 1：縮減停用詞表，不再誤殺 people, time, good, work 等有效實體單字
-    const EXTENDED_STOP_WORDS = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'an', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'her', 'she', 'or', 'will', 'my', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'which', 'me', 'when', 'can', 'no', 'him', 'into', 'your', 'some', 'could', 'them', 'other', 'than', 'then', 'now', 'only', 'its', 'over', 'also', 'back', 'after', 'how', 'our', 'because', 'any', 'these', 'us', 'are', 'is', 'was', 'were', 'am', 'has', 'had', 'been', 'being', 'does', 'did', 'doing']);
+    const EXTENDED_STOP_WORDS = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us', 'are', 'is', 'was', 'were', 'am', 'has', 'had', 'been', 'being', 'does', 'did', 'doing']);
 
     function App() {
       const [words, setWords] = useState([]);
@@ -139,6 +127,7 @@
       
       const [definition, setDefinition] = useState(null); 
       const [isLoadingDef, setIsLoadingDef] = useState(false);
+      const currentCardWordRef = useRef(null); // 🛡️ 解決翻譯錯置 Bug 的關鍵追蹤器
       
       const [isParsing, setIsParsing] = useState(false);
       const [parseStatus, setParseStatus] = useState('');
@@ -149,6 +138,7 @@
       
       const [initialManualInput, setInitialManualInput] = useState(''); 
       const [newWordInput, setNewWordInput] = useState(''); 
+      
       const [wordToDelete, setWordToDelete] = useState(null);
       const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
       
@@ -160,6 +150,7 @@
       const [isLoadingDetailDef, setIsLoadingDetailDef] = useState(false);
       
       const [user, setUser] = useState(null);
+      const [isSyncing, setIsSyncing] = useState(false);
       const [authLoading, setAuthLoading] = useState(true);
       const [isCloudReady, setIsCloudReady] = useState(false);
       const [defLang, setDefLang] = useState(localStorage.getItem('dse_vocab_lang') || 'both');
@@ -169,15 +160,17 @@
       const preloadRef = useRef(false);
       const wakeLockRef = useRef(null);
 
+      const [extractedFullText, setExtractedFullText] = useState('');
       const [isAppendingMode, setIsAppendingMode] = useState(false);
+
       const [showPhraseModal, setShowPhraseModal] = useState(false);
-      const [detectedPhrases, setDetectedPhrases] = useState([]); // 顯示用
-      const [selectedPhrases, setSelectedPhrases] = useState([]); // 實際編輯的陣列
+      const [detectedPhrases, setDetectedPhrases] = useState([]);
+      const [selectedPhrases, setSelectedPhrases] = useState([]);
       const [pendingFileText, setPendingFileText] = useState(''); 
 
       const LIST_PAGE_SIZE = 20;
       const fileInputRef = useRef(null);
-      const appendFileInputRef = useRef(null);
+      const appendFileInputRef = useRef(null); 
       const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v42'; 
 
       const loadLocalData = () => {
@@ -189,11 +182,21 @@
               setWords(parsed.filter(w => w && w.word)); 
               setView('stats'); 
             }
-          } catch (e) {}
+          } catch (e) { console.error(e); }
         }
       };
 
       useEffect(() => {
+        // 🧹 自動清理舊版塞爆記憶體的 LocalStorage 垃圾
+        try {
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('dse_dict_cache_')) {
+                    localStorage.removeItem(key);
+                }
+            }
+        } catch(e) {}
+
         if (auth) {
           const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
             setUser(currentUser);
@@ -221,15 +224,20 @@
           const safeWords = words.length > 8000 ? words.slice(0, 8000) : words;
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(safeWords));
           if (user && db && isCloudReady) {
-            db.collection('users').doc(user.uid).set({ words: safeWords, updatedAt: new Date().toISOString() }).catch(()=>{});
+            db.collection('users').doc(user.uid).set({ words: safeWords, updatedAt: new Date().toISOString() }).catch(e => {});
           }
         }
       }, [words, user, db, isCloudReady]);
 
       const handleGoogleLogin = async () => {
         if (!auth) return;
-        try { await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); } 
-        catch (e) { try { await auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider()); } catch(err) {} }
+        setIsSyncing(true);
+        try {
+          const provider = new firebase.auth.GoogleAuthProvider();
+          await auth.signInWithPopup(provider);
+        } catch (e) {
+          try { await auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider()); } catch(err) { setIsSyncing(false); }
+        }
       };
 
       const handleLogout = async () => {
@@ -250,14 +258,33 @@
               setIsPreparingSession(false);
               return;
           }
+
           const selected = [];
           const poolCopy = [...pool];
           const sessionSize = Math.min(20, poolCopy.length);
+
           while (selected.length < sessionSize && poolCopy.length > 0) {
-              let selectedIndex = Math.floor(Math.random() * poolCopy.length);
+              let totalWeight = 0;
+              const weights = poolCopy.map(w => {
+                  const count = w.viewCount || 0;
+                  const realWorldFreq = w.aiScore || 40; 
+                  let weight = (realWorldFreq * 10) / Math.pow(count + 1, 1.8);
+                  totalWeight += weight;
+                  return weight;
+              });
+
+              let random = Math.random() * totalWeight;
+              let selectedIndex = -1;
+              for (let i = 0; i < poolCopy.length; i++) {
+                  random -= weights[i];
+                  if (random <= 0) { selectedIndex = i; break; }
+              }
+              if (selectedIndex === -1) selectedIndex = poolCopy.length - 1; 
+              
               selected.push(poolCopy[selectedIndex]);
               poolCopy.splice(selectedIndex, 1); 
           }
+
           setSessionList(selected);
           setStudyIndex(0);
           setIsFlipped(false);
@@ -274,7 +301,7 @@
             window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
             resolve(window.pdfjsLib);
           };
-          script.onerror = () => reject();
+          script.onerror = () => reject(new Error("PDF套件載入失敗"));
           document.head.appendChild(script);
         });
       };
@@ -282,12 +309,14 @@
       const handleFileUpload = async (e, isAppending = false) => {
         const file = e.target.files[0];
         if (!file) return;
+
         setIsParsing(true);
         setParseStatus('讀取檔案內容中...');
 
         try {
           let fullText = '';
           const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+          
           if (isPdf) {
             const buffer = await file.arrayBuffer();
             const pdfjs = await loadPdfJs();
@@ -314,13 +343,14 @@
               const potentialPhrases = detectPotentialPhrases(fullText);
               if (potentialPhrases.length > 0) {
                   setDetectedPhrases(potentialPhrases);
-                  setSelectedPhrases([...potentialPhrases]); // 拷貝一份供編輯使用
+                  setSelectedPhrases([...potentialPhrases]); 
                   setIsParsing(false);
                   setShowPhraseModal(true);
               } else {
                   executeFinalParse(fullText, isAppending, []);
               }
           }, 100);
+          
         } catch (err) {
           alert("檔案讀取失敗：" + err.message);
           setIsParsing(false);
@@ -328,27 +358,21 @@
       };
 
       const detectPotentialPhrases = (text) => {
-        const normalizedText = text.replace(/[\r\n]+/g, ' ').toLowerCase();
-        const chunks = normalizedText.split(/[.,?!;:()\[\]"“”]/);
+        const normalizedText = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').toLowerCase();
         let rawPhrases = [];
         
         const r1 = /\b(take|get|put|set|go|come|make|look|bring|turn|give|keep|pass|run|break|drop|fall|hold|stand|catch|pay|pick|pull|push|throw|carry|draw|point|walk|work|ward|tone|add|fly|figure|fill|find|hand|leave|let|show|sort|step|think|try|use|wake|wash|wear|wipe)\s+(up|down|in|out|on|off|over|under|away|back|through|with|for|to)\b/gi;
         const r2 = /\b(in|on|at|off|under|over|through|into|out of|behind|beyond|without|within|from|by|for)\s+(the|a|an)\s+[a-z]{2,15}\b/gi;
         const r3 = /\b[a-z]{3,15}\s+(in|on|at|of|for|with|to|around|about|into|out of)\s+(the|a|an)\s+[a-z]{3,15}\b/gi;
-        const r4 = /\b(the|a|an)\s+[a-z]{3,12}\s+(in|on|at|of|for|with|to|out of|into)\s+(the|a|an)\s+[a-z]{3,15}\b/gi;
+        const r4 = /\b[a-z]{3,12}\s+(the|a|an|my|your|his|her|its|our|their|it|all|some)\s+[a-z]{2,12}\s+(in|on|at|of|for|with|to|out|out of|into|off|up|down|about|around|under|over)\s+(the|a|an|my|your|his|her|its|our|their)?\s?[a-z]{2,15}\b/gi;
         const r5 = /\b[a-z]{3,12}\s+(up|down|out|in|on|off)\s+(with|to|for|of)\b/gi;
 
-        chunks.forEach(chunk => {
-            const cleanChunk = chunk.replace(/\s+/g, ' ').trim();
-            if(cleanChunk.length < 5) return;
-            
-            [r1, r2, r3, r4, r5].forEach(regex => {
-                let m;
-                while ((m = regex.exec(cleanChunk)) !== null) {
-                    let p = m[0].trim();
-                    if (p.includes(' ') && p.length > 5 && p.length < 35) rawPhrases.push(p);
-                }
-            });
+        [r1, r2, r3, r4, r5].forEach(regex => {
+            let m;
+            while ((m = regex.exec(normalizedText)) !== null) {
+                let p = m[0].trim();
+                if (p.includes(' ') && p.length > 5 && p.length < 40) rawPhrases.push(p);
+            }
         });
 
         rawPhrases = [...new Set(rawPhrases)].sort((a, b) => b.length - a.length);
@@ -356,22 +380,28 @@
         for (let rp of rawPhrases) {
             if (!finalPhrases.some(fp => fp.includes(rp) && fp !== rp)) finalPhrases.push(rp);
         }
-        return finalPhrases.slice(0, 40); 
+        return finalPhrases.slice(0, 45);
       };
 
       const finalizeParsing = (fullText, existingWords = [], isManualInput = false, approvedCustomPhrases = []) => {
         const safeFullText = fullText || ''; 
         const existingMap = new Map(existingWords.map(w => [w.word.toLowerCase(), w]));
         let uniqueMap = new Map();
+        const freqMap = new Map();
         let cleanText = safeFullText.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').toLowerCase();
 
         if (isManualInput) {
             let manualPhrase = cleanText.trim();
-            if (manualPhrase.length > 1) uniqueMap.set(manualPhrase, true);
+            if (manualPhrase.length > 1) {
+                uniqueMap.set(manualPhrase, true);
+                freqMap.set(manualPhrase, 1);
+            }
         } else {
             approvedCustomPhrases.forEach(phrase => {
                 if (cleanText.includes(phrase)) {
                     uniqueMap.set(phrase, true);
+                    const matchCount = (cleanText.match(new RegExp('\\b' + phrase.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'g')) || []).length;
+                    freqMap.set(phrase, matchCount);
                     const pRegex = new RegExp('\\b' + phrase.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'g');
                     cleanText = cleanText.replace(pRegex, ' '); 
                 }
@@ -381,9 +411,9 @@
             if (wordMatches) {
                 wordMatches.forEach(w => {
                     let clean = w.trim();
-                    // 💡 修正 2：改回 > 1，保留長度為 2 的有效單字 (go, do 等)
-                    if (clean.length > 1 && !EXTENDED_STOP_WORDS.has(clean)) {
+                    if (clean.length > 1 && !EXTENDED_STOP_WORDS.has(clean)) { 
                         uniqueMap.set(clean, true);
+                        freqMap.set(clean, (freqMap.get(clean) || 0) + 1);
                     }
                 });
             }
@@ -391,10 +421,17 @@
 
         const newValidWords = [];
         for (let key of uniqueMap.keys()) {
+          const actualFreq = freqMap.get(key) || 1;
           if (key.length <= 60) {
-             if (!existingMap.has(key)) existingMap.set(key, { word: key, status: 'new', note: '', customTrans: '', viewCount: 0 });
+             if (existingMap.has(key)) {
+                 const ew = existingMap.get(key);
+                 ew.pdfFreq = (ew.pdfFreq || 0) + actualFreq; 
+             } else {
+                 existingMap.set(key, { word: key, status: 'new', note: '', customTrans: '', viewCount: 0, pdfFreq: actualFreq });
+             }
           }
         }
+        
         for (let val of existingMap.values()) {
             if (val && val.word) newValidWords.push(val);
         }
@@ -408,13 +445,15 @@
           setTimeout(() => {
               try {
                   const existingList = isAppending ? words : [];
-                  const newWords = finalizeParsing(text, existingList, false, approvedPhrases);
+                  const validPhrases = approvedPhrases.filter(p => p.trim() !== '');
+                  const newWords = finalizeParsing(text, existingList, false, validPhrases);
+                  
                   if (newWords.length > 0) {
                       setWords(newWords);
                       setView(isAppending ? 'list' : 'stats');
-                      if (isAppending) alert("追加成功！");
-                  } else alert("未找到有效新單字。");
-              } catch (err) { alert("發生錯誤：" + err.message); }
+                      if (isAppending) alert("追加成功！已為你合併新單字。");
+                  } else alert("解析完成，但未找到有效新單字。");
+              } catch (err) { alert("解析過程發生錯誤：" + err.message); }
               
               setIsParsing(false);
               if (fileInputRef.current) fileInputRef.current.value = '';
@@ -424,21 +463,24 @@
 
       const handleInitialManualInputSubmit = () => {
          if (!initialManualInput.trim()) return;
-         if (words.length > 0 && !window.confirm("這會覆蓋目前的紀錄，確定嗎？")) return;
+         if (words.length > 0 && !window.confirm("這會覆蓋目前的紀錄，確定嗎？ (若要追加請到管理頁面)")) return;
+         
          const newWords = finalizeParsing(initialManualInput, [], true, []);
          if (newWords.length > 0) {
             setWords(newWords);
             setInitialManualInput('');
             setView('stats');
-         } else alert("找不到有效的單字！");
+         } else alert("找不到有效的單字或短語！");
       };
 
       const handleAddWordFromList = () => {
          const w = newWordInput.trim().toLowerCase();
          if (!w) return;
          if (words.some(existing => existing.word.toLowerCase() === w)) return alert('字庫中已有此單字！');
-         setWords(prev => [{ word: w, status: 'new', note: '', customTrans: '', viewCount: 0 }, ...prev]);
+         const newObj = { word: w, status: 'new', note: '', customTrans: '', viewCount: 0, pdfFreq: 1 };
+         setWords(prev => [newObj, ...prev]);
          setNewWordInput('');
+         alert(`成功新增：${w}`);
       };
 
       const speakWord = (wordStr, accent = 'US', e) => {
@@ -451,44 +493,32 @@
         }
       };
 
-      const fetchWordData = async (wordStr, wordObj, onUpdate, forceRefreshEnDef = false) => {
+      // 🛡️ 重新打造的最強抓取引擎：即時抓取、不存壞檔、強制並發
+      const fetchWordData = async (wordStr, wordObj) => {
         const lowerWord = wordStr.toLowerCase();
-        const cacheKey = `dse_dict_cache_v5_${lowerWord}`; 
+        const cacheKey = `dse_dict_cache_v7_${lowerWord}`; // 版本升級，強制捨棄之前的壞快取
         
-        let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null, isLegitEmpty: false };
-        let hasValidCache = false;
-
-        const cached = await getDictCache(cacheKey);
+        let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null, dictNotFound: false };
+        
+        const cached = await idb.get(cacheKey);
         if (cached) {
-            currentData = { ...currentData, ...cached }; 
-            if (currentData.translation || currentData.richTranslation?.length > 0 || currentData.isLegitEmpty) {
-                hasValidCache = true;
-            }
+            currentData = { ...currentData, ...cached };
         }
 
-        if (wordObj?.customTrans) currentData.translation = wordObj.customTrans;
-        onUpdate({ ...currentData }); 
-
-        let needsZh = !currentData.translation && currentData.richTranslation.length === 0 && !currentData.isLegitEmpty;
-        let needsEn = !wordStr.includes(' ') && (!currentData.enDef || currentData.enDef.length === 0);
-
-        if (!needsZh && (!needsEn || !forceRefreshEnDef)) {
-            if (hasValidCache) return true; 
+        if (wordObj && wordObj.customTrans) {
+            currentData.translation = wordObj.customTrans;
         }
 
-        let isRateLimited = false;
-        let isUpdated = false;
+        let needsSave = false;
         const fetches = [];
         
-        if (needsZh) {
+        // 翻譯沒抓到就再次抓
+        if (!currentData.translation && (!currentData.richTranslation || currentData.richTranslation.length === 0)) {
             fetches.push(
                 fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`)
-                .then(r => {
-                    if (r.status === 429) { isRateLimited = true; throw new Error('Rate Limited'); }
-                    return r.json();
-                })
+                .then(r => { if (!r.ok) throw new Error('Translate Limit'); return r.json(); })
                 .then(data => { 
-                    if (data[0]?.[0]?.[0]) currentData.translation = data[0][0][0];
+                    if (data[0]?.[0]?.[0]) currentData.translation = data[0][0][0]; 
                     if (data[1] && Array.isArray(data[1])) {
                         const posMap = { 'noun':'名詞', 'verb':'動詞', 'adjective':'形容詞', 'adverb':'副詞', 'preposition':'介詞', 'pronoun':'代名詞', 'conjunction':'連接詞' };
                         currentData.richTranslation = data[1].map(item => ({
@@ -496,50 +526,54 @@
                             terms: Array.isArray(item[1]) ? item[1].slice(0, 5) : []
                         }));
                     }
-                    isUpdated = true;
-                }).catch(()=>{})
+                    needsSave = true; // 成功才准寫入快取
+                })
+                .catch(()=>{}) // 失敗就保持空白，下次再抓
             );
         }
         
-        if (needsEn && forceRefreshEnDef) {
+        // 英文解釋如果空了且沒有被標記為永久找不到(404)，就再次抓
+        if (!wordStr.includes(' ') && (!currentData.enDef || currentData.enDef.length === 0) && !currentData.dictNotFound) {
             fetches.push(
                 fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerWord)}`)
-                .then(r => r.json())
+                .then(r => { 
+                    if (r.status === 404) { currentData.dictNotFound = true; needsSave = true; return null; }
+                    if (!r.ok) throw new Error('API Limit'); 
+                    return r.json(); 
+                })
                 .then(data => { 
-                    if (data[0]?.meanings) {
-                        currentData.phonetic = data[0].phonetic || data[0].phonetics?.find(p => p.text)?.text || currentData.phonetic;
+                    if (data && data[0]?.meanings) {
+                        currentData.phonetic = data[0].phonetic || data[0].phonetics?.find(p => p.text)?.text || '';
                         currentData.enDef = data[0].meanings.map(m => ({
                             pos: m.partOfSpeech,
                             def: m.definitions[0]?.definition
                         })).slice(0, 3);
-                        isUpdated = true;
+                        needsSave = true; // 成功才准寫入快取
                     }
-                }).catch(()=>{})
+                })
+                .catch(()=>{}) // 失敗就保持空白，下次再抓
             );
         }
 
-        await Promise.allSettled(fetches);
-
-        if (wordObj?.customTrans) currentData.translation = wordObj.customTrans;
-        onUpdate({ ...currentData });
-
-        if (!isRateLimited) {
-            if (!currentData.translation && currentData.richTranslation.length === 0) {
-                currentData.isLegitEmpty = true;
+        if (fetches.length > 0) {
+            await Promise.allSettled(fetches);
+            if (needsSave) {
+                await idb.set(cacheKey, currentData);
             }
-            await setDictCache(cacheKey, currentData);
-            return true;
         }
-        
-        return false; 
+        return currentData;
       };
 
-      const fetchDefinitionForCard = async (wordObj, forceEnDef = false) => {
+      const fetchDefinitionForCard = async (wordObj) => {
         setIsLoadingDef(true);
-        await fetchWordData(wordObj.word, wordObj, (data) => {
+        setDefinition(null);
+        const data = await fetchWordData(wordObj.word, wordObj);
+        
+        // 🛡️ 畫面鎖定防護：如果載入完成時，畫面已經跳到下一個字，就放棄覆蓋，解決錯亂 Bug
+        if (currentCardWordRef.current === wordObj.word) {
             setDefinition(data);
             setIsLoadingDef(false);
-        }, forceEnDef); 
+        }
       };
 
       const openWordDetail = async (item) => {
@@ -549,10 +583,10 @@
         setDetailStatus(item.status);
         setIsLoadingDetailDef(true);
         setDetailDef(null);
-        await fetchWordData(item.word, item, (data) => {
-            setDetailDef(data);
-            setIsLoadingDetailDef(false);
-        }, true);
+        
+        const data = await fetchWordData(item.word, item);
+        setDetailDef(data);
+        setIsLoadingDetailDef(false);
       };
 
       const saveWordDetail = () => {
@@ -564,7 +598,9 @@
 
       const handleFlip = () => {
         if (!isFlipped && sessionList.length > 0 && sessionList[studyIndex]) {
-           fetchDefinitionForCard(sessionList[studyIndex], true);
+           const currentWordObj = sessionList[studyIndex];
+           currentCardWordRef.current = currentWordObj.word; // 紀錄當下正在看哪張卡
+           fetchDefinitionForCard(currentWordObj);
         }
         setIsFlipped(!isFlipped);
       };
@@ -593,62 +629,55 @@
 
       const executeClearAll = () => {
         setWords([]);
-        localStorage.removeItem(LOCAL_STORAGE_KEY); 
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
         setShowClearConfirmModal(false);
         setView('import');
-        alert("已清空單字清單！\n\n(您之前辛苦下載的翻譯已安全保留在快取資料庫中，下次上傳即可秒速套用)");
+        alert("已清空單字清單（已為你永久保留在背景離線翻譯快取中，下次上傳秒速套用）。");
       };
 
+      // 🚀 極速 1秒10字 的下載引擎
       const startPreload = async () => {
-         const cachedKeys = await getAllDictCacheKeys(); 
-         const uncachedWords = words.filter(w => w && w.word && !cachedKeys.has(`dse_dict_cache_v5_${w.word.toLowerCase()}`));
-         const totalWordsCount = words.length;
-         let alreadyCachedCount = totalWordsCount - uncachedWords.length;
-
-         if (uncachedWords.length === 0) { alert("所有單字翻譯皆已永久保存！翻卡片將是秒殺速度！"); return; }
-         if (!window.confirm(`準備以【極速引擎】下載剩餘的 ${uncachedWords.length} 字？`)) return;
-
          setIsPreloading(true);
          preloadRef.current = true;
-         setPreloadStats({ current: alreadyCachedCount, total: totalWordsCount });
+         
+         const cachedKeys = await idb.keys();
+         const keySet = new Set(cachedKeys);
+         const uncachedWords = words.filter(w => w && w.word && !keySet.has(`dse_dict_cache_v7_${w.word.toLowerCase()}`));
+         
+         if (uncachedWords.length === 0) { 
+             setIsPreloading(false);
+             alert("太神啦！所有翻譯皆已完整下載！"); 
+             return; 
+         }
+
+         if (!window.confirm(`準備以極速雙通道下載 ${uncachedWords.length} 個單字的離線雙語翻譯包？`)) {
+             setIsPreloading(false);
+             return;
+         }
+
+         setPreloadStats({ current: 0, total: uncachedWords.length });
 
          try { if ('wakeLock' in navigator) wakeLockRef.current = await navigator.wakeLock.request('screen'); } catch(e) {}
 
-         const CHUNK_SIZE = 10; 
-         let consecutiveFails = 0;
-
+         let count = 0;
+         const CHUNK_SIZE = 5; // 每次並發 5 個
+         
          for (let i = 0; i < uncachedWords.length; i += CHUNK_SIZE) {
              if (!preloadRef.current) break;
              const chunk = uncachedWords.slice(i, i + CHUNK_SIZE);
              
-             const results = await Promise.all(chunk.map(async (wObj) => {
-                 return await fetchWordData(wObj.word, wObj, () => {}, false);
-             }));
+             await Promise.allSettled(chunk.map(wObj => fetchWordData(wObj.word, wObj)));
              
-             const successCount = results.filter(res => res === true).length;
-             const failCount = results.length - successCount;
+             count += chunk.length;
+             setPreloadStats({ current: Math.min(count, uncachedWords.length), total: uncachedWords.length });
              
-             alreadyCachedCount += successCount;
-             setPreloadStats({ current: alreadyCachedCount, total: totalWordsCount });
-             
-             if (failCount > 0) {
-                 consecutiveFails += failCount;
-                 await new Promise(r => setTimeout(r, 1500)); 
-             } else {
-                 consecutiveFails = 0;
-                 await new Promise(r => setTimeout(r, 50)); 
-             }
-
-             if (consecutiveFails >= 20) {
-                 alert("⚠️ Google 伺服器偵測到下載過快，暫停了我們的連線。\n\n系統已為你【安全保存所有進度】！\n請等待約 2 分鐘後，再次點擊「開始下載」即可無縫接軌！");
-                 preloadRef.current = false;
-                 break;
-             }
+             // 短暫延遲防禦阻擋，創造極速體感
+             await new Promise(r => setTimeout(r, 50)); 
          }
 
          setIsPreloading(false);
          if (wakeLockRef.current) { wakeLockRef.current.release().catch(()=>{}); wakeLockRef.current = null; }
-         if (preloadRef.current && alreadyCachedCount >= totalWordsCount) alert("✅ 離線翻譯包極速下載完成！進度已永久保存！");
+         if (preloadRef.current) alert("離線翻譯包極速下載完成！");
       };
 
       const changeLangPreference = (e) => {
@@ -666,9 +695,6 @@
                   </div>
               ));
           }
-          if (defObj.isLegitEmpty) {
-              return <div className="text-gray-400 text-xs font-bold">此單字無常規中文翻譯，請使用自訂意思或備註。</div>;
-          }
           return <div className="font-bold text-indigo-900 text-base">{defObj.translation || '無翻譯資料'}</div>;
       };
 
@@ -682,7 +708,9 @@
                   </div>
               ));
           }
-          if (isPhrase) return <p className="text-xs text-gray-400 leading-relaxed font-medium">片語/特殊詞彙通常無單一英文解釋，請參考中文翻譯。</p>;
+          if (defObj.dictNotFound || isPhrase) {
+              return <p className="text-xs text-gray-400 leading-relaxed font-medium">片語/特殊詞彙通常無單一英文解釋，請參考中文翻譯。</p>;
+          }
           return <p className="text-xs text-gray-400 leading-relaxed font-medium">目前字典 API 暫無此字的詳細英文解釋，請參考中文翻譯。</p>;
       };
 
@@ -706,7 +734,7 @@
             <button onClick={() => fileInputRef.current.click()} disabled={isParsing} className="w-full py-3 bg-gray-800 text-white font-bold rounded-xl shadow cursor-pointer">
               {isParsing ? parseStatus : "上傳 PDF / 圖片自動精準拆字"}
             </button>
-            <p className="text-[10px] text-gray-400 mt-3 text-center">✨ 升級長片語探測與去重演算法</p>
+            <p className="text-[10px] text-gray-400 mt-3 text-center">✨ 升級長片語探測與編輯功能</p>
           </div>
 
           <div className="w-full bg-white rounded-3xl shadow-xl p-6 border flex flex-col items-center">
@@ -732,6 +760,7 @@
         if (!words || words.length === 0 || sessionList.length === 0) return <div className="py-20 text-center">無單字可溫習</div>;
         const currentWordObj = sessionList[studyIndex];
         const progress = Math.round(((studyIndex + 1) / sessionList.length) * 100);
+        
         const isPhrase = currentWordObj.word.includes(' ');
 
         return (
@@ -767,9 +796,9 @@
                   </div>
                   <div className="flex-grow overflow-y-auto text-sm space-y-3">
                     {isLoadingDef ? (
-                      <div className="flex flex-col items-center justify-center py-10 text-indigo-400">
-                         <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-                         <p className="text-xs font-bold">即時為您尋找翻譯中...</p>
+                      <div className="flex flex-col items-center justify-center py-6 text-indigo-400">
+                        <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                        <span className="text-xs font-bold">載入解釋中...</span>
                       </div>
                     ) : (
                       <div>
@@ -823,22 +852,21 @@
                  <div className="absolute inset-0 bg-white/90 z-10 flex flex-col items-center justify-center rounded-xl border border-indigo-200">
                     <span className="text-3xl animate-bounce mb-2">🌐</span>
                     <span className="text-xs font-bold text-indigo-700">Gemini 聯網分析單字考頻中...</span>
-                    <span className="text-[10px] text-gray-500 mt-1">為你選出真實世界最常用的核心詞彙</span>
                  </div>
               )}
 
               <div className="bg-white p-4 rounded-xl shadow-sm border">
                 <label className="text-xs font-bold text-gray-700 block mb-2">📥 離線字庫批次下載：</label>
                 {isPreloading ? (
-                  <div className="w-full bg-indigo-50 p-3 rounded-lg border border-indigo-200">
+                  <div className="w-full bg-indigo-50 p-3 rounded-lg border">
                     <div className="flex justify-between text-[10px] font-bold text-indigo-700 mb-2">
-                       <span>⚡ 極速並發下載中...</span>
+                       <span>極速並發下載中...</span>
                        <span>{preloadStats.current} / {preloadStats.total}</span>
                     </div>
-                    <button onClick={() => { preloadRef.current = false; setIsPreloading(false); }} className="w-full py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs cursor-pointer shadow-sm">暫停下載 (進度已永久保存)</button>
+                    <button onClick={() => { preloadRef.current = false; setIsPreloading(false); }} className="w-full py-2 bg-red-50 text-red-600 border rounded-lg text-xs cursor-pointer font-bold">暫停下載 (進度已完美保存)</button>
                   </div>
                 ) : (
-                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer shadow-sm">⚡ 開始下載離線翻譯 (極速版)</button>
+                  <button onClick={startPreload} className="w-full py-2.5 bg-green-50 text-green-700 border border-green-200 font-bold rounded-lg text-sm cursor-pointer shadow-sm">⚡ 開始極速下載全部雙語翻譯</button>
                 )}
               </div>
 
@@ -854,7 +882,7 @@
               <div className="bg-white p-4 rounded-xl shadow-sm border">
                 <label className="text-xs font-bold text-gray-700 block mb-2">🎯 抽取 20 單字回合：</label>
                 <select value={studyMode} onChange={(e) => setStudyMode(e.target.value)} className="w-full p-2.5 text-sm border rounded-lg outline-none bg-indigo-50/50 text-indigo-900 font-semibold cursor-pointer mb-3">
-                  <option value="all">從全部單字抽 (啟動 AI 網上搜尋高頻詞優先)</option>
+                  <option value="all">從全部單字抽</option>
                   <option value="new">🆕 只從「未學習」隨機抽</option>
                   <option value="review">🔄 只從「需複習」錯題隨機抽</option>
                   <option value="known">✅ 只從「已掌握」隨機抽</option>
@@ -863,7 +891,7 @@
               </div>
 
               <button onClick={() => setView('list')} className="w-full py-2.5 bg-white border text-gray-700 font-bold rounded-xl text-xs cursor-pointer">📋 進入字庫管理 (搜尋、追加、查字典)</button>
-              <button onClick={() => setShowClearConfirmModal(true)} className="w-full mt-2 py-2 text-red-500 font-bold text-xs underline cursor-pointer">清空單字清單 (不刪除翻譯快取)</button>
+              <button onClick={() => setShowClearConfirmModal(true)} className="w-full mt-2 py-2 text-red-500 font-bold text-xs underline cursor-pointer">清空單字清單</button>
             </div>
           </div>
         );
@@ -906,7 +934,7 @@
               
               <input type="file" ref={appendFileInputRef} onChange={(e) => handleFileUpload(e, true)} accept=".pdf,.txt,image/*" className="hidden" />
               <button onClick={() => appendFileInputRef.current.click()} disabled={isParsing} className="px-3 py-2 bg-green-600 text-white font-bold rounded-lg text-xs shadow cursor-pointer whitespace-nowrap">
-                📄 上傳檔案追加
+                📄 檔案追加
               </button>
             </div>
 
@@ -978,12 +1006,12 @@
             {view === 'list' && renderList()}
           </main>
 
+          {/* ✏️ 恢復的片語編輯器：支援編輯與刪除 */}
           {showPhraseModal && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
                 <h3 className="text-xl font-black mb-2">🕵️ 智能短語探測</h3>
-                <p className="text-xs text-gray-500 mb-4">系統發現了以下疑似短語。您可以**直接修改文字**，或點擊 ✕ 將其剔除（剔除後將自動拆分為單字）：</p>
-                
+                <p className="text-xs text-gray-500 mb-4">發現以下疑似「短語」。你可以在框內直接修改文字，或點擊 ✕ 將它剔除（剔除後將拆分為單字）：</p>
                 <div className="max-h-56 overflow-y-auto mb-4 border rounded-xl p-3 bg-gray-50 flex flex-col gap-2 shadow-inner">
                     {selectedPhrases.length === 0 && <span className="text-xs text-gray-400 text-center py-4 font-bold">目前沒有保留任何片語。</span>}
                     {selectedPhrases.map((p, idx) => (
@@ -1004,12 +1032,7 @@
                         </div>
                     ))}
                 </div>
-                
-                <button onClick={() => { 
-                    setShowPhraseModal(false); 
-                    const validPhrases = selectedPhrases.filter(p => p.trim() !== '');
-                    executeFinalParse(pendingFileText, isAppendingMode, validPhrases); 
-                }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl text-sm cursor-pointer shadow">確認並{isAppendingMode ? '追加' : '繼續'}解析</button>
+                <button onClick={() => { setShowPhraseModal(false); executeFinalParse(pendingFileText, isAppendingMode, selectedPhrases); }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl text-xs cursor-pointer shadow">確認並{isAppendingMode ? '追加' : '繼續'}解析</button>
               </div>
             </div>
           )}
@@ -1027,10 +1050,10 @@
                 <div className="flex-grow overflow-y-auto text-xs mb-3 space-y-4">
                   
                   {isLoadingDetailDef && !detailDef ? (
-                      <div className="flex flex-col items-center justify-center py-6 text-indigo-400">
-                         <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                         <p className="text-xs font-bold">載入中...</p>
-                      </div>
+                    <div className="flex flex-col items-center justify-center py-6 text-indigo-400">
+                        <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                        <span className="text-xs font-bold">載入解釋中...</span>
+                    </div>
                   ) : (
                       <div className="bg-slate-50 p-3 rounded-lg border border-gray-200">
                           {(defLang === 'both' || defLang === 'zh') && (
@@ -1063,7 +1086,7 @@
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-xs shadow-2xl">
                 <h3 className="text-lg font-black text-gray-900 text-center mb-2">確定要清空單字清單？</h3>
-                <p className="text-xs text-gray-500 text-center mb-6">離線翻譯快取將會被完美保留，重新上傳後可秒速載入！</p>
+                <p className="text-xs text-gray-500 text-center mb-6">已下載的翻譯快取將會保留在手機內！下次套用不需重新抓取。</p>
                 <div className="flex gap-2">
                   <button onClick={() => setShowClearConfirmModal(false)} className="flex-1 py-2.5 bg-gray-100 text-gray-700 font-bold rounded-xl text-xs cursor-pointer">取消</button>
                   <button onClick={executeClearAll} className="flex-1 py-2.5 bg-red-500 text-white font-bold rounded-xl text-xs cursor-pointer">確定清空</button>
