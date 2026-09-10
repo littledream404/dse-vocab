@@ -47,7 +47,7 @@
       }
     } catch(e) {}
 
-    // --- IndexedDB 核心資料庫 ---
+    // --- IndexedDB 核心資料庫 (永久保留翻譯快取) ---
     const idbPromise = (async () => {
         return new Promise((resolve) => {
             if (!window.indexedDB) return resolve(null);
@@ -124,7 +124,8 @@
       }
     }
 
-    const EXTENDED_STOP_WORDS = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us', 'are', 'is', 'was', 'were', 'am', 'has', 'had', 'been', 'being', 'does', 'did', 'doing']);
+    // 💡 修正 1：縮減停用詞表，不再誤殺 people, time, good, work 等有效實體單字
+    const EXTENDED_STOP_WORDS = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'an', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'her', 'she', 'or', 'will', 'my', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'which', 'me', 'when', 'can', 'no', 'him', 'into', 'your', 'some', 'could', 'them', 'other', 'than', 'then', 'now', 'only', 'its', 'over', 'also', 'back', 'after', 'how', 'our', 'because', 'any', 'these', 'us', 'are', 'is', 'was', 'were', 'am', 'has', 'had', 'been', 'being', 'does', 'did', 'doing']);
 
     function App() {
       const [words, setWords] = useState([]);
@@ -326,10 +327,8 @@
         }
       };
 
-      // 🌟 強化版 NLP 短語探測：先用標點符號切斷句子，防止不相關單字連在一起
       const detectPotentialPhrases = (text) => {
         const normalizedText = text.replace(/[\r\n]+/g, ' ').toLowerCase();
-        // 關鍵：使用標點符號將句子切塊，Regex 就不會越界！
         const chunks = normalizedText.split(/[.,?!;:()\[\]"“”]/);
         let rawPhrases = [];
         
@@ -382,7 +381,10 @@
             if (wordMatches) {
                 wordMatches.forEach(w => {
                     let clean = w.trim();
-                    if (clean.length > 2 && !EXTENDED_STOP_WORDS.has(clean)) uniqueMap.set(clean, true);
+                    // 💡 修正 2：改回 > 1，保留長度為 2 的有效單字 (go, do 等)
+                    if (clean.length > 1 && !EXTENDED_STOP_WORDS.has(clean)) {
+                        uniqueMap.set(clean, true);
+                    }
                 });
             }
         }
@@ -449,7 +451,6 @@
         }
       };
 
-      // 🌟 終極 API 保護與即時加載機制
       const fetchWordData = async (wordStr, wordObj, onUpdate, forceRefreshEnDef = false) => {
         const lowerWord = wordStr.toLowerCase();
         const cacheKey = `dse_dict_cache_v5_${lowerWord}`; 
@@ -459,7 +460,7 @@
 
         const cached = await getDictCache(cacheKey);
         if (cached) {
-            currentData = { ...currentData, ...cached }; // 合併確保屬性都在
+            currentData = { ...currentData, ...cached }; 
             if (currentData.translation || currentData.richTranslation?.length > 0 || currentData.isLegitEmpty) {
                 hasValidCache = true;
             }
@@ -468,11 +469,9 @@
         if (wordObj?.customTrans) currentData.translation = wordObj.customTrans;
         onUpdate({ ...currentData }); 
 
-        // 🌟 強制檢查：如果沒有英文解釋且是單字，或者沒有中文翻譯，我們需要重新抓！
         let needsZh = !currentData.translation && currentData.richTranslation.length === 0 && !currentData.isLegitEmpty;
         let needsEn = !wordStr.includes(' ') && (!currentData.enDef || currentData.enDef.length === 0);
 
-        // 如果快取完好且不需要強制更新，就直接返回
         if (!needsZh && (!needsEn || !forceRefreshEnDef)) {
             if (hasValidCache) return true; 
         }
@@ -481,7 +480,6 @@
         let isUpdated = false;
         const fetches = [];
         
-        // 抓中文
         if (needsZh) {
             fetches.push(
                 fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`)
@@ -503,7 +501,6 @@
             );
         }
         
-        // 抓英文 (如果需要強制更新)
         if (needsEn && forceRefreshEnDef) {
             fetches.push(
                 fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerWord)}`)
@@ -526,7 +523,6 @@
         if (wordObj?.customTrans) currentData.translation = wordObj.customTrans;
         onUpdate({ ...currentData });
 
-        // 如果沒有被阻擋，寫入快取，且標記 LegitEmpty 防止無限重試
         if (!isRateLimited) {
             if (!currentData.translation && currentData.richTranslation.length === 0) {
                 currentData.isLegitEmpty = true;
@@ -538,13 +534,12 @@
         return false; 
       };
 
-      // 翻卡片時，強制觸發尋找缺失的字典檔！
       const fetchDefinitionForCard = async (wordObj, forceEnDef = false) => {
         setIsLoadingDef(true);
         await fetchWordData(wordObj.word, wordObj, (data) => {
             setDefinition(data);
             setIsLoadingDef(false);
-        }, forceEnDef); // 傳入 true 強制加載
+        }, forceEnDef); 
       };
 
       const openWordDetail = async (item) => {
@@ -554,7 +549,6 @@
         setDetailStatus(item.status);
         setIsLoadingDetailDef(true);
         setDetailDef(null);
-        // 管理清單點開時，也強制尋找缺失的資料
         await fetchWordData(item.word, item, (data) => {
             setDetailDef(data);
             setIsLoadingDetailDef(false);
@@ -570,7 +564,6 @@
 
       const handleFlip = () => {
         if (!isFlipped && sessionList.length > 0 && sessionList[studyIndex]) {
-           // 🌟 關鍵修正：翻開卡片時，強制傳入 true 觸發即時加載！
            fetchDefinitionForCard(sessionList[studyIndex], true);
         }
         setIsFlipped(!isFlipped);
@@ -606,7 +599,6 @@
         alert("已清空單字清單！\n\n(您之前辛苦下載的翻譯已安全保留在快取資料庫中，下次上傳即可秒速套用)");
       };
 
-      // 🚀 雙倍極速下載引擎 (1秒 10 字並發)
       const startPreload = async () => {
          const cachedKeys = await getAllDictCacheKeys(); 
          const uncachedWords = words.filter(w => w && w.word && !cachedKeys.has(`dse_dict_cache_v5_${w.word.toLowerCase()}`));
@@ -622,7 +614,6 @@
 
          try { if ('wakeLock' in navigator) wakeLockRef.current = await navigator.wakeLock.request('screen'); } catch(e) {}
 
-         // 擴增並發通道
          const CHUNK_SIZE = 10; 
          let consecutiveFails = 0;
 
@@ -631,7 +622,6 @@
              const chunk = uncachedWords.slice(i, i + CHUNK_SIZE);
              
              const results = await Promise.all(chunk.map(async (wObj) => {
-                 // 批次下載時傳入 false，避免大量產生 404 請求拖垮速度
                  return await fetchWordData(wObj.word, wObj, () => {}, false);
              }));
              
@@ -643,10 +633,10 @@
              
              if (failCount > 0) {
                  consecutiveFails += failCount;
-                 await new Promise(r => setTimeout(r, 1500)); // 被擋就退避 1.5 秒
+                 await new Promise(r => setTimeout(r, 1500)); 
              } else {
                  consecutiveFails = 0;
-                 await new Promise(r => setTimeout(r, 50)); // 成功就極速前進 (50ms)
+                 await new Promise(r => setTimeout(r, 50)); 
              }
 
              if (consecutiveFails >= 20) {
@@ -988,7 +978,6 @@
             {view === 'list' && renderList()}
           </main>
 
-          {/* 🌟 完美修復與強化的片語編輯視窗 */}
           {showPhraseModal && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
@@ -1018,7 +1007,6 @@
                 
                 <button onClick={() => { 
                     setShowPhraseModal(false); 
-                    // 過濾掉被使用者改為空字串的項目
                     const validPhrases = selectedPhrases.filter(p => p.trim() !== '');
                     executeFinalParse(pendingFileText, isAppendingMode, validPhrases); 
                 }} className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl text-sm cursor-pointer shadow">確認並{isAppendingMode ? '追加' : '繼續'}解析</button>
