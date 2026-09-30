@@ -173,6 +173,20 @@
       const appendFileInputRef = useRef(null); 
       const LOCAL_STORAGE_KEY = 'dse_vocab_react_final_web_v42'; 
 
+      // ⏱️ 新增：自帶超時防護的 Fetch 工具
+      const fetchWithTimeout = async (resource, timeout = 3000) => {
+          const controller = new AbortController();
+          const id = setTimeout(() => controller.abort(), timeout);
+          try {
+              const response = await fetch(resource, { signal: controller.signal });
+              clearTimeout(id);
+              return response;
+          } catch (error) {
+              clearTimeout(id);
+              throw error; // 將丟出 AbortError 或是網路錯誤
+          }
+      };
+
       const loadLocalData = () => {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
         if (saved) {
@@ -228,6 +242,22 @@
           }
         }
       }, [words, user, db, isCloudReady]);
+
+      // 🚀 新增：智能背景預載機制 (Silent Prefetching)
+      // 當使用者看著正面時，背後偷偷把當前和接下來的兩個單字翻譯抓好存入資料庫
+      useEffect(() => {
+          if (view === 'study' && sessionList.length > 0) {
+              const prefetchQueue = [
+                  sessionList[studyIndex],
+                  sessionList[studyIndex + 1],
+                  sessionList[studyIndex + 2]
+              ].filter(Boolean); // 過濾掉超出陣列範圍的 undefined
+
+              prefetchQueue.forEach(wObj => {
+                  fetchWordData(wObj.word, wObj).catch(() => {}); // 靜默抓取，不影響 UI
+              });
+          }
+      }, [studyIndex, view, sessionList]);
 
       const handleGoogleLogin = async () => {
         if (!auth) return;
@@ -493,10 +523,10 @@
         }
       };
 
-      // 🛡️ 重新打造的最強抓取引擎：即時抓取、不存壞檔、強制並發
+      // 🛡️ 結合超時中斷的最強抓取引擎
       const fetchWordData = async (wordStr, wordObj) => {
         const lowerWord = wordStr.toLowerCase();
-        const cacheKey = `dse_dict_cache_v7_${lowerWord}`; // 版本升級，強制捨棄之前的壞快取
+        const cacheKey = `dse_dict_cache_v7_${lowerWord}`; // 版本升級
         
         let currentData = { translation: null, richTranslation: [], enDef: [], phonetic: null, dictNotFound: false };
         
@@ -512,10 +542,10 @@
         let needsSave = false;
         const fetches = [];
         
-        // 翻譯沒抓到就再次抓
+        // 翻譯沒抓到就再次抓 (加入 3 秒超時)
         if (!currentData.translation && (!currentData.richTranslation || currentData.richTranslation.length === 0)) {
             fetches.push(
-                fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`)
+                fetchWithTimeout(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&dt=bd&q=${encodeURIComponent(lowerWord)}`, 3000)
                 .then(r => { if (!r.ok) throw new Error('Translate Limit'); return r.json(); })
                 .then(data => { 
                     if (data[0]?.[0]?.[0]) currentData.translation = data[0][0][0]; 
@@ -528,14 +558,14 @@
                     }
                     needsSave = true; // 成功才准寫入快取
                 })
-                .catch(()=>{}) // 失敗就保持空白，下次再抓
+                .catch(()=>{}) // 失敗就保持空白，下次再抓，或因為超時而放棄
             );
         }
         
-        // 英文解釋如果空了且沒有被標記為永久找不到(404)，就再次抓
+        // 英文解釋如果空了且沒有被標記為永久找不到(404)，就再次抓 (加入 3 秒超時)
         if (!wordStr.includes(' ') && (!currentData.enDef || currentData.enDef.length === 0) && !currentData.dictNotFound) {
             fetches.push(
-                fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerWord)}`)
+                fetchWithTimeout(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lowerWord)}`, 3000)
                 .then(r => { 
                     if (r.status === 404) { currentData.dictNotFound = true; needsSave = true; return null; }
                     if (!r.ok) throw new Error('API Limit'); 
@@ -566,10 +596,10 @@
 
       const fetchDefinitionForCard = async (wordObj) => {
         setIsLoadingDef(true);
-        setDefinition(null);
+        // 如果此字尚未有任何快取，畫面會顯示載入圈圈；若已有背景快取，此處瞬間完成。
         const data = await fetchWordData(wordObj.word, wordObj);
         
-        // 🛡️ 畫面鎖定防護：如果載入完成時，畫面已經跳到下一個字，就放棄覆蓋，解決錯亂 Bug
+        // 🛡️ 畫面鎖定防護：確保翻譯對應正確卡片
         if (currentCardWordRef.current === wordObj.word) {
             setDefinition(data);
             setIsLoadingDef(false);
@@ -584,6 +614,7 @@
         setIsLoadingDetailDef(true);
         setDetailDef(null);
         
+        // 強制抓取與更新
         const data = await fetchWordData(item.word, item);
         setDetailDef(data);
         setIsLoadingDetailDef(false);
@@ -635,7 +666,7 @@
         alert("已清空單字清單（已為你永久保留在背景離線翻譯快取中，下次上傳秒速套用）。");
       };
 
-      // 🚀 極速 1秒10字 的下載引擎
+      // 🚀 極速 1秒10字 的下載引擎 (加入防卡死機制)
       const startPreload = async () => {
          setIsPreloading(true);
          preloadRef.current = true;
