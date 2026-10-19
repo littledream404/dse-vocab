@@ -151,7 +151,7 @@
       }
     }
 
-    const EXTENDED_STOP_WORDS = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'an', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'her', 'she', 'or', 'will', 'my', 'would', 'there', 'their', 'what', 'so', 'if', 'about', 'who', 'which', 'me', 'am', 'is', 'are', 'was', 'were', 'been', 'being']);
+    const EXTENDED_STOP_WORDS = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good', 'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us', 'are', 'is', 'was', 'were', 'am', 'has', 'had', 'been', 'being', 'does', 'did', 'doing']);
 
     function App() {
       const [words, setWords] = useState([]);
@@ -527,11 +527,12 @@
                 freqMap.set(manualPhrase, 1);
             }
         } else {
-            approvedCustomPhrases.forEach(phrase => {
-                if (cleanText.includes(phrase)) {
+            approvedCustomPhrases.forEach(rawPhrase => {
+                const phrase = rawPhrase.trim().toLowerCase().replace(/\s+/g, ' ');
+                if (phrase && cleanText.includes(phrase)) {
                     uniqueMap.set(phrase, true);
                     const matchCount = (cleanText.match(new RegExp('\\b' + phrase.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'g')) || []).length;
-                    freqMap.set(phrase, matchCount);
+                    freqMap.set(phrase, matchCount || 1);
                     const pRegex = new RegExp('\\b' + phrase.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '\\b', 'g');
                     cleanText = cleanText.replace(pRegex, ' '); 
                 }
@@ -541,7 +542,8 @@
             if (wordMatches) {
                 wordMatches.forEach(w => {
                     let clean = w.trim();
-                    if (clean.length >= 2 && !EXTENDED_STOP_WORDS.has(clean)) { 
+                    // 嚴格過濾 2 個字母以下的詞性縮寫/斷字碎片 (如 vt, vi, adj, sb, eg 等) 與基礎停用詞
+                    if (clean.length > 2 && !EXTENDED_STOP_WORDS.has(clean)) { 
                         uniqueMap.set(clean, true);
                         freqMap.set(clean, (freqMap.get(clean) || 0) + 1);
                     }
